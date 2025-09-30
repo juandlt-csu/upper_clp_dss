@@ -12,104 +12,44 @@ source("src/setup_libraries.R")
 
 ```
 
-# Read in water chemistry data
+# Reading in data
 
 Prepared in `01_raw_data_prep.Rmd`
 
+## Read in water chemistry data
+
 ```{r}
 water_chem <- read_parquet("data/upper_clp_dss/modeling/ROSS_FC_water_chemistry.parquet")
+```
 
+## Read in wide sensor dataset
+
+```{r}
 wide_sensor_file <- list.files(path = "data/upper_clp_dss/sensor/prepped/", pattern = "all_sensor_data_wide_.*\\.parquet$", full.names = TRUE)%>%
   tail(1)
 
-all_data <- read_parquet(wide_sensor_file)%>%
-  mutate(year = year(DT_hourly_round))%>%
-  #split by year
-  split(.$year)
-```
-
-## Compute additional lagged parameters
-
-```{r}
-# custom function to calculate lagged parameters
-source("src/calc_lagged_parameter.R")
-#custom function to apply fdom temp correction
-source("src/apply_fdom_temp_corr.R")
-
-final_dataset <-all_data%>%
-  map(., function(df){
-    df %>%
-      #cleaning up turbidity values (rounding to nearest value, setting min to 1 and max to 1000)
-      mutate(Turbidity = round(Turbidity),
-             Turbidity = if_else(Turbidity <= 0, 1, if_else(Turbidity>=1000, 1000, Turbidity)))%>%
-      #applying FDOM temperature correcting/standardization
-      apply_fdom_temp_corr( fdom_col = "FDOM Fluorescence",
-                            temp_col = "Temperature",
-                            fdom_corr_col = "FDOM_corr_25c",
-                            Tr = 25,
-                            rho = -0.015)%>%
-      # recent means (water temp)
-      calc_lagged_parameter(site_col = "site", parameter_col = "Temperature",
-                            dt_col = "DT_hourly_round", lag_fun = "mean",
-                            time_period = "48 hour", new_value_col = "temp_mean_48hr")%>%
-      calc_lagged_parameter(site_col = "site", parameter_col = "Temperature",
-                            dt_col = "DT_hourly_round", lag_fun = "mean",
-                            time_period = "24 hour", new_value_col = "temp_mean_24hr")%>%
-      # recent maxes (temp, fdom)
-      calc_lagged_parameter(site_col = "site", parameter_col = "FDOM Fluorescence",
-                            dt_col = "DT_hourly_round", lag_fun = "max",
-                            time_period = "6 hour", new_value_col = "fdom_max_6hr")%>%
-      calc_lagged_parameter(site_col = "site", parameter_col = "FDOM_corr_25c",
-                            dt_col = "DT_hourly_round", lag_fun = "max",
-                            time_period = "6 hour", new_value_col = "fdom_corr_max_6hr")%>%
-      calc_lagged_parameter(site_col = "site", parameter_col = "Temperature",
-                            dt_col = "DT_hourly_round", lag_fun = "max",
-                            time_period = "24 hour", new_value_col = "temp_max_24hr")%>%
-      # recent variance/sd (sc)
-      calc_lagged_parameter(site_col = "site", parameter_col = "Specific Conductivity",
-                            dt_col = "DT_hourly_round", lag_fun = "var",
-                            time_period = "24 hour", new_value_col = "sc_var_24hr")%>%
-      mutate(sc_sd_24hr = sqrt(sc_var_24hr))%>%
-      #12 hour median turbidity (proxy for recent storm event)
-      calc_lagged_parameter(site_col = "site", parameter_col = "Turbidity",
-                            dt_col = "DT_hourly_round", lag_fun = "median",
-                            time_period = "24 hour", new_value_col = "turb_median_12hr")
-  })
-
-
-```
-
-
-
-
-## Select features 
-
-```{r}
-
-# Combine all years into one dataframe
-all_sensor_data_wide <- bind_rows(final_dataset)%>%
+all_sensor_data_wide <- read_parquet(wide_sensor_file)%>%
   rename(DT_round = DT_hourly_round)
+```
 
-id_cols <- c("site", "DT_round", "data_avail", "year")
+## Trim dataset to variables of interest
 
+```{r}
+#site/date identifiers to keep 
+id_cols <- c("site", "DT_round", "data_avail")
+#find all the other variables
 features <- setdiff(colnames(all_sensor_data_wide), id_cols)
 #remove pH, ORP, Depth, DO
 features <- features[features %nin% c("pH", "pH MV", "ORP", "Depth", "DO")]
 
+#trim down to only needed columns and create a data available column
 all_sensor_data_wide <- all_sensor_data_wide%>%
   select( any_of(id_cols), any_of(features))%>% # remove unneeded parameters for TOC model 
   mutate(data_avail = if_else(rowSums(!is.na(across(all_of(features)))) == length(features), TRUE, FALSE))
 
 ```
 
-## Save entire wide dataset
-
-```{r}
-
-write_parquet(all_sensor_data_wide, paste0("data/upper_clp_dss/sensor/prepped/all_sensor_data_wide_", Sys.Date(),".parquet"))
-```
-
-## plot available data vs water chem
+# Visualize Data Availability
 
 ```{r}
 
@@ -367,122 +307,23 @@ write_csv(all_matched_data, "data/upper_clp_dss/modeling/parsed_data_ROSS_virrid
 
 # Explore new features
 
-## Comparing FDOM Corrected values to original RFUs
-
-```{r}
-modeling_data_new <- modeling_data %>%
-  mutate(
-    doy = yday(sensor_datetime),
-    Turbidity = round(Turbidity),
-    Turbidity = if_else(Turbidity == 0, 1, Turbidity),
-    watershed = if_else(id %in% c("pfal", "pbr", "pman", "pbd", "chd", "joei", "cbri", "penn", "lbea", "sfm"),
-                        "UpperPoudre", "LowerPoudre"),
-    # FDOM_corr_25c features
-    f_temp    = FDOM_corr_25c / Temperature,
-    f_sc      = FDOM_corr_25c / `Specific Conductivity`,
-    f_turb    = FDOM_corr_25c / Turbidity, 
-    turb_f    = Turbidity / FDOM_corr_25c, 
-    temp_f    = Temperature / FDOM_corr_25c, 
-    f_log     = log1p(FDOM_corr_25c), 
-    temp_x_f  = Temperature * FDOM_corr_25c,
-    temp_x_turb = Temperature * Turbidity,
-    f_x_sc    = FDOM_corr_25c * `Specific Conductivity`,
-    f_x_turb  = FDOM_corr_25c * Turbidity,
-    f2_temp   = (FDOM_corr_25c^2) * Temperature,
-    
-    # Duplicates using FDOM Fluorescence
-    f_temp_org    = `FDOM Fluorescence` / Temperature,
-    f_sc_org      = `FDOM Fluorescence` / `Specific Conductivity`,
-    f_turb_org    = `FDOM Fluorescence` / Turbidity, 
-    turb_f_org   = Turbidity / `FDOM Fluorescence`, 
-    temp_f_org    = Temperature / `FDOM Fluorescence`, 
-    f_log_org     = log1p(`FDOM Fluorescence`), 
-    temp_x_f_org  = Temperature * `FDOM Fluorescence`,
-    f_x_sc_org    = `FDOM Fluorescence` * `Specific Conductivity`,
-    f_x_turb_org  = `FDOM Fluorescence` * Turbidity,
-    f2_temp_org   = (`FDOM Fluorescence`^2) * Temperature, 
-    #doy sin
-    sin_doy = sin(2 * pi * doy / 365.25), 
-    cos_doy = cos(2 * pi * doy / 365.25)
-  )
-
-
-# Define feature "bases" (no suffix)
-feature_bases <- c("f_temp","f_sc","f_turb","turb_f","temp_f","f_log",
-                   "temp_x_f","f_x_sc","f_x_turb","f2_temp")
-
-# Map each base to its 3 variants
-feature_sets <- tibble(
-  base = rep(feature_bases, each = 2),
-  version = rep(c("corrected","original"), times = length(feature_bases))
-)%>%
-  mutate(feature_name = ifelse(version == "original", paste0(base, "_org"), base))
-
-# Run models for each feature
-r2_table <- map_dfr(feature_sets$feature_name, function(feat){
-  modeling_data_new %>%
-    group_by(watershed) %>%
-    do({
-      fit <- lm(TOC ~ .data[[feat]], data = .)
-      tibble(
-        feature_name = feat,
-        adj_r2 = summary(fit)$adj.r.squared
-      )
-    })
-})
-
-# Join with feature mapping
-r2_table <- r2_table %>%
-  left_join(feature_sets, by = c("feature_name")) %>%
-  select(base, version, watershed, adj_r2)
-
-# Reshape: wide by version × watershed
-r2_wide <- r2_table %>%
-  pivot_wider(
-    names_from = c(version, watershed),
-    values_from = adj_r2
-  )%>%
-  select(base, original_UpperPoudre, corrected_UpperPoudre, original_LowerPoudre,
-         corrected_LowerPoudre)%>%
-  arrange(desc(corrected_UpperPoudre))%>%
-  mutate(diff_upper = corrected_UpperPoudre - original_UpperPoudre,
-         diff_lower = corrected_LowerPoudre - original_LowerPoudre)
-
-r2_wide
-
-r2_wide %>%
-  tidyr::pivot_longer(
-    cols = c(original_UpperPoudre, corrected_UpperPoudre,
-             original_LowerPoudre, corrected_LowerPoudre),
-    names_to = c("version", "watershed"),
-    names_pattern = "(original|corrected)_(.*)",
-    values_to = "adj_r2"
-  ) %>%
-  tidyr::pivot_wider(names_from = version, values_from = adj_r2) %>%
-  ggplot(aes(x = original, y = corrected, color = watershed, label = base)) +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
-  geom_point(size = 3) +
-  geom_text(vjust = -0.7, size = 3) +
-  labs(x = "Original R²", y = "Corrected FDOM R²",
-       title = "Comparison of Adjusted R² by FDOM method") +
-  theme_minimal()
-```
-
 ## Checking relationships for new features with TOC
 
 ```{r}
+
+modeling_data_new <- modeling_data %>%
+  apply_sensor_transformations_toc(dt_col = "sensor_datetime")%>%
+  mutate(watershed = ifelse(id %in% c("joei", "cbri", "chd", "pfal","pbr",  "sfm", "pman", "pbd"), "UpperPoudre", "LowerPoudre"))
+
 
 id_cols <- c("id", "sensor_datetime", "lab_datetime", "collector",
              "data_avail", "doy", "site_code","TOC", "ChlA", "watershed", "year")
 
 #new features 
 new_features <- setdiff(names(modeling_data_new), c(id_cols))
-#remove anything with org in it
-new_features <- new_features[!str_detect(new_features, "_org")]
 #dropping additional ones
 new_features <- new_features[!new_features %in% c("sc_sd_24hr", "temp_mean_48hr", #lagged parameters
                                                   "temp_x_turb")]
-
 
 plot_list <- list()
 for(i in new_features){
@@ -525,17 +366,8 @@ g <- wrap_plots(plot_list, guides = "collect")+
 
 g
 
+#plot just doy
 plot_list$sin_doy
-
-doy_data <- tibble(doy = 1:365)
-# make a plot of doy and sin(doy) and cos(doy)
-ggplot( doy_data, aes(x = doy)) +
-  geom_point(aes(y = sin(2 * pi * doy / 365.25)), color = "blue") +
-  geom_point(aes(y = cos(2 * pi * doy / 365.25)), color = "red") +
-  labs(title = "Sine (blue) and Cosine (red) of Day of Year",
-       x = "Day of Year",
-       y = "Value") +
-  ROSS_theme
 
 
 ```
