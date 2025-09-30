@@ -21,8 +21,6 @@
 #'
 #' @param fold_ids dataframe containing the fold number and a list of the corresponding validation site ids
 #'
-#' @param save_fold_models logical for whether the model itself should be saved
-#'
 #' @return A caret model object containing the trained XGBoost model for each fold and performance metrics (train/val RMSE, MAE, Bias).
 #' Best performing models determined by taking the top 10 val RMSE scores and then selecting the one with the smallest train-val gap.
 #'
@@ -50,9 +48,8 @@
 #' units = "mg/L"
 #')
 
-xgboost_site_stratified_tuning <- function(data, target_col = "TOC", site_col = "id", weights = NULL,
-                                           tune_grid = NULL, fold_ids, units = "mg/L",
-                                           save_fold_models = TRUE) {
+xgboost_hyperparameter_tuning <- function(data, target_col = "TOC", site_col = "id", weights = NULL,
+                                           tune_grid = NULL, fold_ids, units = "mg/L") {
 
   # Create default grid if not provided
   if (is.null(tune_grid)) {
@@ -211,6 +208,10 @@ xgboost_site_stratified_tuning <- function(data, target_col = "TOC", site_col = 
       ))
       # Save model temporarily
       fold_models[[paste0("fold", i, "_grid", j)]] <- model_ij
+
+      if(j/50 == round(j/50)){
+        cat(paste0("  Completed ", j, " of ", nrow(tune_grid), " hyperparameter combinations...\n"))
+      }
     }
 
     p <- ggplot(perf) +
