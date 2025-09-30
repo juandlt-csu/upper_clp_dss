@@ -31,6 +31,7 @@ invisible(
     "trend",
     "xgboost",
     "scales",
+    "slider",
     # Spatial packages
     "sf",
     "nhdplusTools",
