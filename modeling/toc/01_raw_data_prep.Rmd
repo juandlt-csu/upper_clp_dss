@@ -683,19 +683,68 @@ all_data_wide <- all_data %>%
           id_cols = c(site, DT_hourly_round),
           names_from = parameter,
           values_from = hourly_median
-        )
-      )%>%
-  rbindlist(., use.names = TRUE, fill = TRUE)
+        )%>%
+      #cleaning up turbidity values (rounding to nearest value, setting min to 1 and max to 1000)
+      mutate(Turbidity = if_else(Turbidity <= 0, 0.1, if_else(Turbidity>=1000, 1000, Turbidity)))
+      )
+```
+
+
+## Compute additional lagged parameters
+
+```{r}
+# custom function to calculate lagged parameters
+source("src/calc_lagged_parameter.R")
+#custom function to apply fdom temp correction
+source("src/apply_fdom_temp_corr.R")
+
+final_dataset <-all_data_wide%>%
+  map(., function(df){
+    df %>%
+      #applying FDOM temperature correcting/standardization
+      apply_fdom_temp_corr( fdom_col = "FDOM Fluorescence",
+                            temp_col = "Temperature",
+                            fdom_corr_col = "FDOM_corr_25c",
+                            Tr = 25,
+                            rho = -0.015)%>%
+      # recent means (water temp)
+      calc_lagged_parameter(site_col = "site", parameter_col = "Temperature",
+                            dt_col = "DT_hourly_round", lag_fun = "mean",
+                            time_period = "48 hour", new_value_col = "temp_mean_48hr")%>%
+      calc_lagged_parameter(site_col = "site", parameter_col = "Temperature",
+                            dt_col = "DT_hourly_round", lag_fun = "mean",
+                            time_period = "24 hour", new_value_col = "temp_mean_24hr")%>%
+      # recent maxes (temp, fdom)
+      calc_lagged_parameter(site_col = "site", parameter_col = "FDOM Fluorescence",
+                            dt_col = "DT_hourly_round", lag_fun = "max",
+                            time_period = "6 hour", new_value_col = "fdom_max_6hr")%>%
+      calc_lagged_parameter(site_col = "site", parameter_col = "FDOM_corr_25c",
+                            dt_col = "DT_hourly_round", lag_fun = "max",
+                            time_period = "6 hour", new_value_col = "fdom_corr_max_6hr")%>%
+      calc_lagged_parameter(site_col = "site", parameter_col = "Temperature",
+                            dt_col = "DT_hourly_round", lag_fun = "max",
+                            time_period = "24 hour", new_value_col = "temp_max_24hr")%>%
+      # recent variance/sd (sc)
+      calc_lagged_parameter(site_col = "site", parameter_col = "Specific Conductivity",
+                            dt_col = "DT_hourly_round", lag_fun = "var",
+                            time_period = "24 hour", new_value_col = "sc_var_24hr")%>%
+      mutate(sc_sd_24hr = sqrt(sc_var_24hr))%>%
+      #12 hour median turbidity (proxy for recent storm event)
+      calc_lagged_parameter(site_col = "site", parameter_col = "Turbidity",
+                            dt_col = "DT_hourly_round", lag_fun = "median",
+                            time_period = "24 hour", new_value_col = "turb_median_12hr")
+  })%>%
+  bind_rows()
+
+
 ```
 
 ## Save wide dataset
 
 ```{r}
-write_parquet(all_data_wide, paste0("data/upper_clp_dss/sensor/prepped/all_sensor_data_wide_", Sys.Date(),".parquet"))
+write_parquet(final_dataset, paste0("data/upper_clp_dss/sensor/prepped/all_sensor_data_wide_", Sys.Date(),".parquet"))
 
 ```
-
-
 
 # Pull in & clean up grab sample data
 
