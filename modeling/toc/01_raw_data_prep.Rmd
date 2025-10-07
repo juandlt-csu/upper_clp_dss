@@ -9,7 +9,6 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 options(dplyr.summarise.inform = FALSE)
 source("src/setup_libraries.R")
-source("src/add_column_if_not_exists.R")
 source("src/apply_cleaning_filters.R")
 source("src/apply_interpolation_missing_data.R")
 source("src/apply_low_pass_binomial_filter.R")
@@ -345,7 +344,6 @@ mst_end <- ymd_hms(end_date, tz = time_zone)
 
 
 ###### ALREADY RUN for 07/2025 #######
-# source("src/api_puller.R")
 # 
 # # pull data for each site
 # walk(sites_to_process,
@@ -523,13 +521,14 @@ for (chunk_idx in seq_along(intrasensor_data_chunks)) {
 iwalk(intrasensor_flags_list, 
       ~write_csv(.x, file.path(temp_directory, paste0(.y, ".csv"))))
 
-#custom network check while fcw.qaqc package is being updated
-source("src/network_check.R")
+
+#TODO: Double check when fcw.qaqc is updated
+site_order_list <- load_site_order(here("data", "field_notes", "qaqc", "site_order_2025.yml"))
 
 # apply network-level quality control
 network_flags <- intrasensor_flags_list %>%
   # network check compares patterns across sites
-  purrr::map(~network_check(df = .,network = "all", intrasensor_flags_arg = intrasensor_flags_list)) %>%
+  purrr::map(~network_check(df = .,network = "all", intrasensor_flags_arg = intrasensor_flags_list, site_order_arg = site_order_list)) %>%
   rbindlist(fill = TRUE) %>%
   # clean up flag column formatting
   tidy_flag_column() %>%
@@ -655,15 +654,9 @@ This comes from the script above and should be updated when an API pull, QAQC is
 ```{r}
 
 #Get most recent files
-all_data_2023_wide_file <- list.files(path = "data/upper_clp_dss/sensor/prepped/", pattern = "all_2023_sensor_data_.*\\.parquet$", full.names = TRUE)%>%
-  sort(decreasing = TRUE)%>%
-  .[1]
-all_data_2024_wide_file <- list.files(path = "data/upper_clp_dss/sensor/prepped/", pattern = "all_2024_sensor_data_.*\\.parquet$", full.names = TRUE)%>%
-  sort(decreasing = TRUE)%>%
-  .[1]
-all_data_2025_wide_file <- list.files(path = "data/upper_clp_dss/sensor/prepped/", pattern = "all_2025_sensor_data_.*\\.parquet$", full.names = TRUE)%>%
-  sort(decreasing = TRUE)%>%
-  .[1]
+all_data_2023_wide_file <- list.files(path = "data/upper_clp_dss/sensor/prepped/", pattern = "all_2023_sensor_data_.*\\.parquet$", full.names = TRUE)%>%tail(1)
+all_data_2024_wide_file <- list.files(path = "data/upper_clp_dss/sensor/prepped/", pattern = "all_2024_sensor_data_.*\\.parquet$", full.names = TRUE)%>%tail(1)
+all_data_2025_wide_file <- list.files(path = "data/upper_clp_dss/sensor/prepped/", pattern = "all_2025_sensor_data_.*\\.parquet$", full.names = TRUE)%>%tail(1)
 ```
 
 ### Read in recent files
@@ -878,8 +871,7 @@ FC_chem <- bind_rows(FC_chem_2022_2024, FC_chem_2025)
 ## Combine data
 ```{r}
 
-water_chem <- bind_rows(ross_water_chem, FC_chem)%>%
-  filter(site_code %in% unique(all_data_wide$site))
+water_chem <- bind_rows(ross_water_chem, FC_chem)
 
 #save for later use
 write_parquet(water_chem, "data/upper_clp_dss/modeling/ROSS_FC_water_chemistry.parquet")
