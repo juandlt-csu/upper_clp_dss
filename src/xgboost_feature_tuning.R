@@ -53,14 +53,11 @@ xgboost_feature_tuning <- function(data, target_col = "TOC", site_col = "id", we
 
 
 
-  #Set up the fold indices
-  n_folds <- nrow(fold_ids)
-
   fold_indices <- list()
   fold_indices_out <- list()
 
   # create indices for each fold based on the fold_ids input lists
-  for (i in 1:n_folds) {
+  for (i in 1:nrow(fold_ids)) {
     val_sites <- fold_ids$val_ids[[i]]
 
     # Indices for validation
@@ -84,7 +81,7 @@ xgboost_feature_tuning <- function(data, target_col = "TOC", site_col = "id", we
 
   # Run through each train/val fold and hypertune
   for (i in seq_along(fold_indices)) {
-    cat(paste0("Tuning fold ", i, " of ", n_folds, "...\n"))
+    cat(paste0("Tuning fold ", i, " of ", nrow(fold_ids), "...\n"))
 
     #setup performance dataframe
     perf <- data.frame()
