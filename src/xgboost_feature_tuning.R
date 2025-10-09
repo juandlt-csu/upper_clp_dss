@@ -49,39 +49,35 @@
 #')
 
 xgboost_feature_tuning <- function(data, target_col = "TOC", site_col = "id", weights = NULL,
-                                           feature_grid = NULL, hyper_params, fold_ids, units = "mg/L",
-                                           plot_dir = NULL) {
+                                   feature_grid = NULL, hyper_params, fold_ids, units = "mg/L",
+                                   plot_dir = NULL) {
 
-
-
+  # Create empty lists for folds
   fold_indices <- list()
   fold_indices_out <- list()
 
-  # create indices for each fold based on the fold_ids input lists
+  # define indices for each fold based on the fold_ids input vectors
   for (i in 1:nrow(fold_ids)) {
     val_sites <- fold_ids$val_ids[[i]]
 
     # Indices for validation
     val_idx <- which(data[[site_col]] %in% val_sites)
-    # Indices for training (complement)
+    # Indices of training set
     train_idx <- setdiff(1:nrow(data), val_idx)
-
+    #store indices in list
     fold_indices[[i]] <- train_idx
     fold_indices_out[[i]] <- val_idx
   }
 
   # Train model
   cat("Starting site-stratified hyperparameter tuning...\n")
-
+  #create empty lists to store output
   fold_models <- list()
   fold_results <- list()
   best_params <- list()
-  #Testing to see if data is being stored in correctly between groups
-  #train_data_lists <- list()
-  #val_data_lists <- list()
 
-  # Run through each train/val fold and hypertune
-  for (i in seq_along(fold_indices)) {
+  # Run through each train/val fold: determine best features and hypertune model parameters
+  for (i in 1:length(fold_indices)) {
     cat(paste0("Tuning fold ", i, " of ", nrow(fold_ids), "...\n"))
 
     #setup performance dataframe
@@ -89,9 +85,6 @@ xgboost_feature_tuning <- function(data, target_col = "TOC", site_col = "id", we
     all_importances <- data.frame()
 
     # Split data into training and validation sets based on indices above
-    train_idx <- fold_indices[[i]]
-    val_idx   <- fold_indices_out[[i]]
-
     train_data <- data[fold_indices[[i]], ]
     #train_data_lists[[i]] <- train_data
     val_data   <- data[fold_indices_out[[i]], ]
@@ -107,8 +100,8 @@ xgboost_feature_tuning <- function(data, target_col = "TOC", site_col = "id", we
       w_val   <- weights(val_data)
     } else if (length(weights) == nrow(data)) {
       #use external weighting function
-      w_train <- weights[train_idx]
-      w_val   <- weights[val_idx]
+      w_train <- weights[fold_indices[[i]]]
+      w_val   <- weights[fold_indices_out[[i]]]
     } else {
       stop("`weights` must be NULL, a function(data) -> numeric, or a vector of length nrow(data)")
     }
@@ -136,7 +129,7 @@ xgboost_feature_tuning <- function(data, target_col = "TOC", site_col = "id", we
       # Set train vs val for early stopping
       watchlist <- list(train = dtrain, eval = dval)
 
-      #setup parameters for tune
+      # define "naive" model to choose features
       params <- list(
         objective        = "reg:squarederror",
         eval_metric      = "rmse",
@@ -183,23 +176,20 @@ xgboost_feature_tuning <- function(data, target_col = "TOC", site_col = "id", we
       mae_train   <- mae( train_data[[target_col]], train_data[[pred_col]])
       bias_train  <- bias(train_data[[target_col]], train_data[[pred_col]])
 
-      #get importance
-      importance_matrix <-
-
       # store in a master tibble
       all_importances <- bind_rows(all_importances,
                                    xgb.importance(feature_names = features, model = model_ij) %>%
                                      mutate(fold = i, grid_id = j))
-# Playing with shapley values
-#       library(SHAPforxgboost)
-#       shap_values <- shap.values(xgb_model = model_ij, X_train = dtrain)
-#
-#       # shap_values$shap_score is a matrix of Shapley values
-#       head(shap_values$shap_score)
-#
-#       # Summary plot
-#       shap_long <- shap.prep(shap_contrib = shap_values$shap_score, X_train = as.matrix(train_data[, features]))
-#       shap.plot.summary(shap_long)
+      # Playing with shapley values
+      #       library(SHAPforxgboost)
+      #       shap_values <- shap.values(xgb_model = model_ij, X_train = dtrain)
+      #
+      #       # shap_values$shap_score is a matrix of Shapley values
+      #       head(shap_values$shap_score)
+      #
+      #       # Summary plot
+      #       shap_long <- shap.prep(shap_contrib = shap_values$shap_score, X_train = as.matrix(train_data[, features]))
+      #       shap.plot.summary(shap_long)
 
       perf <- rbind(perf, data.frame(
         fold       = i,
