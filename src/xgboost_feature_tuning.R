@@ -25,6 +25,7 @@
 #' @return
 #'
 #' @examples
+# here, we assume that val_set_1 (and other objects in the list) contain vectors of identifiers present in the `data` dataframe
 #' folds <- data.frame(
 #'   fold = 1:4,
 #'   val_ids = list(val_set_1, val_set_2, val_set_3, val_set_4)
