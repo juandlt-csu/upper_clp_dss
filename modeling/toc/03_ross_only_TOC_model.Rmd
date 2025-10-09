@@ -126,7 +126,7 @@ train_val <- all_matches_trimmed %>%
 ```
 
 
-# Train all 4 models on train val
+# Train all models across CV folds
 
 ## Define and visualize folds
 
@@ -259,7 +259,7 @@ toc_high_weights <-  function(df) {
          1 + 3 *log1p(df$TOC - 4))  # grows slowly, no cap needed
 }
 
-features_test <- c("FDOM", "Sensor_Cond","Chl_a", "Temp", # raw sensor values
+features_test <- c("FDOMc", "Sensor_Cond","Chl_a", "Temp", # raw sensor values
                "f_x_turb", "f_sc", "temp_f", #product features
                "fdom_corr_max_6hr", "temp_max_24hr", "turb_median_12hr",#lagged features 
                "sin_doy" #seasonal
@@ -318,7 +318,7 @@ toc_high_weights <-  function(df) {
          1 + 2 *log1p(df$TOC - 4))  # grows slowly, no cap needed
 }
 
-features <- c("FDOM", "Sensor_Cond",  # raw sensor values
+features <- c("FDOMc", "Sensor_Cond",  # raw sensor values
                "f_x_turb", "f_sc", #product features
                "fdom_corr_max_6hr",  #lagged features
               "sin_doy") #seasonal features

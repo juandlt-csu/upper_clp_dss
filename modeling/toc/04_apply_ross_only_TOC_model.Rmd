@@ -260,6 +260,7 @@ example_data <- complete_sensor_data %>%
   ) %>%
   mutate(parameter = case_when(
     parameter == "FDOM" ~ "FDOM Fluorescence",
+    parameter == "FDOMc" ~ "FDOM Temp Corrected",
     parameter == "Sensor_Turb" ~ "Turbidity",
     parameter == "Sensor_Cond" ~ "Specific Conductivity",
     parameter == "Chl_a" ~ "Chl-a Fluorescence",

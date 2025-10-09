@@ -49,7 +49,8 @@ apply_sensor_transformations_toc <- function(wide_df, dt_col = "DT_round") {
       f_x_turb  = FDOM_corr_25c * Turbidity,
       f2_temp   = (FDOM_corr_25c^2) * Temperature)%>%
     rename(
-      FDOM = FDOM_corr_25c,
+      FDOM = `FDOM Fluorescence`,
+      FDOMc = FDOM_corr_25c,
       Chl_a = `Chl-a Fluorescence`,
       Sensor_Turb = Turbidity,
       Sensor_Cond = `Specific Conductivity`,
