@@ -786,7 +786,7 @@ write_parquet(final_dataset, paste0("data/upper_clp_dss/sensor/prepped/all_senso
 # Pull in & clean up grab sample data
 
 This will/should become a function in the future 
-(ie water_chem <- `pull_upper_clp_chem_data(zenodo_data_version, save_folder_dir, fc_data_path)`)
+(ie water_chem <- `load_clp_chem_dataset(zenodo_data_version, save_folder_dir, fc_data_path)`)
 
 
 ## ROSS

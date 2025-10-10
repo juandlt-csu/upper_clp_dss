@@ -5,12 +5,16 @@ date: "`r Sys.Date()`"
 output: html_document
 ---
 
+# Setup
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 options(dplyr.summarise.inform = FALSE)
 source("src/setup_libraries.R")
 
 ```
+
+The purpose of this script is to create a dataset that matches up water chemistry grab samples with sensor data. The final dataset will be used for modeling TOC from sensor data. Intially I was doing alot of exploratory analysis of where/when we were dropping/losing samples, this can be removed later on. We should functionalize/generalize the matchup function in this script so we can use it for other parameters in the future. Once this has been condensed, there is less need to save our datasets unless we need to export them later on.
 
 # Reading in data
 
