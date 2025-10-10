@@ -59,7 +59,7 @@ invisible(
     "jsonlite",
     "dataRetrieval",
     "RSelenium",
-    # "cdssr",
+    "cdssr",
     "yaml",
     # Development tools
     "devtools",

@@ -9,6 +9,7 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 options(dplyr.summarise.inform = FALSE)
 source("src/setup_libraries.R")
+library(cdssr)
 
 ```
 
@@ -202,7 +203,7 @@ missing_samples <- TOC_samples%>%
 FC_missing_samples <- TOC_samples%>%
   filter(collector == "FC" & is.na(sensor_datetime))
 
-cat("Number of samples with no match up:\n", sum(missing_samples$n_missing), " of ", nrow(TOC_samples), "\n", nrow(FC_missing_samples), " are FC samples with no match (ie sensor may not be deployed)" )
+cat("Number of samples with no match up:\n", sum(missing_samples$n_missing), " of ", nrow(TOC_samples), "\n", nrow(FC_missing_samples), " are FC samples with no match (ie sensor may not be deployed)\n" )
 print(missing_samples, n = Inf)
 
 #create a histogram of the time difference between sensor_datetime and lab_datetime
@@ -227,8 +228,42 @@ large_time_diff
 
 ```
 
+# Save Final Dataset
 
-## Create example plot of sensor TS 
+## Saving ROSS only set
+
+```{r}
+
+ROSS_model_data <- modeling_data%>%
+  #removing samples with no match up
+  filter(!is.na(sensor_datetime))%>%
+  mutate(sensor_datetime = as.character(sensor_datetime), 
+         lab_datetime = as.character(lab_datetime))
+
+write_csv(ROSS_model_data, paste0("data/upper_clp_dss/modeling/parsed_data_ROSS_", Sys.Date(),".csv"))
+
+```
+
+
+
+## Binding with Virridy 
+
+```{r}
+virridy_data <- read_csv("data/upper_clp_dss/modeling/parsed_data_virridy.csv")%>%
+  dplyr::select(-"...1" )%>%
+  mutate(id = as.character(mw_id))%>%
+  select(-mw_id)%>%
+  mutate(collector = "Virridy")
+
+all_matched_data <- ROSS_model_data%>%
+  bind_rows(virridy_data)
+
+write_csv(all_matched_data, "data/upper_clp_dss/modeling/parsed_data_ROSS_virridy.csv")
+
+```
+
+
+# Create example plot of sensor TS 
 Add grab sample DT as dashed black line and sensor match up as solid red line
 
 ```{r}
@@ -268,107 +303,4 @@ ggsave(plot = example_ts_grab, "data/upper_clp_dss/figures/example_sensor_timese
 
 ```
 
-
-
-# Save Final Dataset
-
-## Saving ROSS only set
-
-```{r}
-
-ROSS_model_data <- modeling_data%>%
-  #removing samples with no match up
-  filter(!is.na(sensor_datetime))%>%
-  mutate(sensor_datetime = as.character(sensor_datetime), 
-         lab_datetime = as.character(lab_datetime))
-
-write_csv(ROSS_model_data, paste0("data/upper_clp_dss/modeling/parsed_data_ROSS_", Sys.Date(),".csv"))
-
-```
-
-
-
-## Binding with Virridy 
-
-```{r}
-virridy_data <- read_csv("data/upper_clp_dss/modeling/parsed_data_virridy.csv")%>%
-  dplyr::select(-"...1" )%>%
-  mutate(id = as.character(mw_id))%>%
-  select(-mw_id)%>%
-  mutate(collector = "Virridy")
-
-all_matched_data <- ROSS_model_data%>%
-  bind_rows(virridy_data)
-
-write_csv(all_matched_data, "data/upper_clp_dss/modeling/parsed_data_ROSS_virridy.csv")
-
-```
-
-
-# Explore new features
-
-## Checking relationships for new features with TOC
-
-```{r}
-
-modeling_data_new <- modeling_data %>%
-  apply_sensor_transformations_toc(dt_col = "sensor_datetime")%>%
-  mutate(watershed = ifelse(id %in% c("joei", "cbri", "chd", "pfal","pbr",  "sfm", "pman", "pbd"), "UpperPoudre", "LowerPoudre"))
-
-
-id_cols <- c("id", "sensor_datetime", "lab_datetime", "collector",
-             "data_avail", "doy", "site_code","TOC", "ChlA", "watershed", "year")
-
-#new features 
-new_features <- setdiff(names(modeling_data_new), c(id_cols))
-#dropping additional ones
-new_features <- new_features[!new_features %in% c("sc_sd_24hr", "temp_mean_48hr", #lagged parameters
-                                                  "temp_x_turb")]
-
-plot_list <- list()
-for(i in new_features){
-  
-  plot_list[[i]] <- ggplot(modeling_data_new, 
-                           aes(x = .data[[i]], y = TOC, color = id)) +
-    geom_point_interactive(
-      aes(
-        tooltip = paste("Site:", id, 
-                        "<br>", i, ":", round(.data[[i]], 2), 
-                        "<br>TOC:", round(TOC, 2)),
-        data_id = paste(id, TOC, sep = "_")   # <- shared ID across plots
-      )
-    ) +
-    geom_smooth(method = "lm", se = FALSE, color = "blue") +
-    stat_regline_equation(
-      label.x.npc = "left", label.y.npc = 0.9,
-      aes(label = paste( ..adj.rr.label.., sep = "~~~~")),
-      color = "blue"
-    ) +
-    labs(x = i, y = "TOC (mg/L)") +
-    theme(legend.position = "none") +
-    guides(color = "none") +
-    facet_wrap(~watershed, scales = "free") +
-    ROSS_theme
-  
-  if(i %in% c("turb_median_12hr", "turb_mean_12hr")){
-    plot_list[[i]] <- plot_list[[i]] + xlim(0,100)
-  }
-  if(i %in% c("f_temp")){
-    plot_list[[i]] <- plot_list[[i]] + xlim(0,2.5)
-  }
-}
-
-# Combine with patchwork
-g <- wrap_plots(plot_list, guides = "collect")+
-  plot_annotation(title = "FDOM Corr Derived Parameters",
-                  subtitle = "Colored by Site",
-                  caption = "Dashed line is linear regression fit with adjusted R2") 
-
-g
-
-#plot just doy
-plot_list$sin_doy
-
-
-```
 
