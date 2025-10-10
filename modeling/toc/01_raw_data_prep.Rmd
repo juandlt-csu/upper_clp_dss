@@ -5,16 +5,30 @@ date: "`r Sys.Date()`"
 output: html_document
 ---
 
+# Setup & Custom Functions
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 options(dplyr.summarise.inform = FALSE)
+# load libraries
 source("src/setup_libraries.R")
+# custom function to reduce overflagging
 source("src/apply_cleaning_filters.R")
+# custom function to apply interpolation for missing data
 source("src/apply_interpolation_missing_data.R")
+# custom function to apply low pass binomial filter
 source("src/apply_low_pass_binomial_filter.R")
+# custom function to calculate medians in data
 source("src/apply_timestep_median.R")
+# custom function to calculate lagged parameters
+source("src/calc_lagged_parameter.R")
+#custom function to apply fdom temp correction
+source("src/apply_fdom_temp_corr.R")
 ```
 
+The purpose of this script is to pull in all verified sensor data from 2023 and 2024, as well as auto QAQC'ed data from 2025, apply some additional cleaning steps (interpolation, smoothing, hourly median) and then combine into a single long format dataset as well as a wide format dataset with some additional lagged parameters calculated. Finally, we will add in flow data from the Canyon Mouth guage. 
+
+This script also includes the loading/parsing of ROSS and FC sample data into a single file: "data/upper_clp_dss/modeling/ROSS_FC_water_chemistry.parquet"
 
 # Pull in & Clean up sensor data
 
@@ -34,10 +48,9 @@ site_level_string <- paste(site_levels, collapse = "|")
 parameter_level_string <- paste(parameter_levels, collapse = "|")
 ```
 
-
-merge 2023 + 2024 data for sites OI
-
 ## 2023 dataset
+
+2023 data was manually verified after passing auto-QAQC, data is binned into two categories of PASS or FAIL based on the flag. If a flagged point is PASSED, it is of poor quality and should be omitted from the final dataset. If a flagged point is FAILED, it is of good quality and should be retained in the final dataset. If a non-flagged point is PASSED, it is of good quality and should be retained in the final dataset. If a non-flagged point is FAILED, it is of poor quality and should be omitted from the final dataset.
 
 ```{r}
 #load in 2023 verified data
@@ -125,7 +138,7 @@ gc()
 
 ## 2024 dataset
 
-This dataset's verification is still in progress and may need to be rerun as additional data is confirmed
+This dataset's verification is still in progress and may need to be rerun as additional data is confirmed. This data has three possible verification statuses: PASS, FLAGGED, and OMIT. If a point is marked as OMIT, it should be removed from the final dataset. If a point is marked as PASS, it is of good quality and should be retained in the final dataset. If a point is marked as FLAGGED, it is of medium quality and should be used cautiously/smoothed in the final dataset. Unverified data points are retained if they do not have an auto-flag, but are removed if they do have an auto-flag.
 
 ```{r}
 #load in 2024 verified data
@@ -278,7 +291,7 @@ hydrovu_creds_file <- "creds/HydroVuCreds.yml"
 
 # Configure date range for data retrieval
 start_date <- "2025-01-01 00:00:00"  # MST
-end_date <- "2025-07-05 23:59:59"    # MST
+end_date <- "2025-12-05 23:59:59"    # MST
 
 time_zone = "America/Denver"
 
@@ -638,7 +651,7 @@ write_parquet(all_sensor_data, paste0("data/upper_clp_dss/sensor/prepped/all_sen
 ```{r}
 
 #remove everything from memory
-rm(list=ls())
+rm(list=setdiff(ls(), c("calc_lagged_parameter","apply_fdom_temp_corr")))
 gc()
 
 ```
@@ -647,6 +660,8 @@ gc()
 # Create wide sensor dataset
 
 This comes from the script above and should be updated when an API pull, QAQC is updated or as more data is verified.
+
+I think we could have a function (`update_sensor_data()`) that would essentially run all the code above + code in this section and saves it to come consistent file path. We could then have a `load_sensor_data()` function that always pulls in the most recent data.
 
 ### Get most recent files
 
@@ -685,10 +700,6 @@ all_data_wide <- all_data %>%
 ## Compute additional lagged parameters
 
 ```{r}
-# custom function to calculate lagged parameters
-source("src/calc_lagged_parameter.R")
-#custom function to apply fdom temp correction
-source("src/apply_fdom_temp_corr.R")
 
 final_dataset <-all_data_wide%>%
   map(., function(df){
@@ -765,12 +776,18 @@ final_dataset <- final_dataset%>%
 
 ## Save wide dataset
 
+This will be used downstream to determine matchups/modeling
+
 ```{r}
 write_parquet(final_dataset, paste0("data/upper_clp_dss/sensor/prepped/all_sensor_data_wide_", Sys.Date(),".parquet"))
 
 ```
 
 # Pull in & clean up grab sample data
+
+This will/should become a function in the future 
+(ie water_chem <- `pull_upper_clp_chem_data(zenodo_data_version, save_folder_dir, fc_data_path)`)
+
 
 ## ROSS
 
