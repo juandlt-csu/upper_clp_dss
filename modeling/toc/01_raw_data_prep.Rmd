@@ -522,7 +522,6 @@ iwalk(intrasensor_flags_list,
       ~write_csv(.x, file.path(temp_directory, paste0(.y, ".csv"))))
 
 
-#TODO: Double check when fcw.qaqc is updated
 site_order_list <- load_site_order(here("data", "field_notes", "qaqc", "site_order_2025.yml"))
 
 # apply network-level quality control
@@ -729,6 +728,38 @@ final_dataset <-all_data_wide%>%
   })%>%
   bind_rows()
 
+
+```
+
+## Get Flow data for CLP & join with sensor data
+
+```{r}
+
+min_date <- min(final_dataset$DT_hourly_round, na.rm = T)
+max_date <- max(final_dataset$DT_hourly_round, na.rm = T)
+
+canyon_mouth_flow <- get_telemetry_ts(abbrev = "CLAFTCCO", 
+                 parameter = "DISCHRG", 
+                 start_date = as.Date(min_date)- days(1),
+                 end_date = as.Date(max_date)+ days(1),
+                 timescale = "hour")%>%
+  select(DT_hourly_round = meas_date, hourly_canyon_flow_cfs = meas_value)%>%
+  mutate(DT_hourly_round = with_tz(ymd_hms(DT_hourly_round, tz = "America/Denver"), tzone = "MST"))
+
+canyon_mouth_flow_daily <- get_telemetry_ts(abbrev = "CLAFTCCO", 
+                 parameter = "DISCHRG", 
+                 start_date = as.Date(min_date)- days(1),
+                 end_date = as.Date(max_date)+ days(1),
+                 timescale = "day")%>%
+  select(date = datetime, daily_canyon_flow_cfs = meas_value)%>%
+  mutate( date = as.Date(date))
+
+final_dataset <- final_dataset%>%
+  mutate(date = as_date(DT_hourly_round))%>%
+  left_join(canyon_mouth_flow, by = "DT_hourly_round")%>%
+  left_join(canyon_mouth_flow_daily, by = "date")%>%
+  select(-date)
+  
 
 ```
 
