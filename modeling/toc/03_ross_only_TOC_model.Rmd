@@ -24,8 +24,14 @@ set.seed(123)
 version = "20251009"
 
 source("src/apply_sensor_transformations_toc.R")
+# function to tune xgboost hyperparameters
+source("src/xgboost_hyperparameter_tuning.R")
 #function to plot performance of each fold
 source("src/plot_tv_fold_perf.R")
+#function to plot performance of each fold
+source("src/plot_tvt_fold_perf.R")
+#function to plot performance of each fold
+source("src/plot_tvt_ensemble_perf.R")
 ```
 
 # Create scaling based on all sensor data
@@ -626,8 +632,9 @@ feature_tv_plots <- map(1:3, ~plot_tv_fold_perf(fold_set = .x,
                              fold_model = best_models[[.x]], # a list where each element is a model for that fold
                              target_col = "TOC", units = "mg/L")
                             )
-wrap_plots(feature_tv_plots, ncol = 1, guides = "collect")&
+ft_tv_plot<- wrap_plots(feature_tv_plots, ncol = 1, guides = "collect")&
   theme(legend.position = "bottom")
+ft_tv_plot
 
 
 ```
@@ -635,19 +642,15 @@ wrap_plots(feature_tv_plots, ncol = 1, guides = "collect")&
 
 ## Hyperparameter Tuning
 Now that we have a feature set, we can do some hyperparameter tuning to see if we can improve model performance. This will take a while to run, so we will save the results and load them in later.
+
+### Setup
+
 ```{r}
-source("src/xgboost_hyperparameter_tuning.R")
 
 folds <- tibble(
   fold = 1:3,
   val_ids = list(val_set_1, val_set_2, val_set_3)
 )
-
-toc_high_weights <-  function(df) {
-  ifelse(df$TOC <= 4,1,                  # flat weight for low TOC
-         1 + 2 *log1p(df$TOC - 4))  # grows slowly, no cap needed
-}
-
 features <- best_models[[1]]$feature_names
 
 # Reduce tune grid for reruns (ie. General best params)
@@ -662,6 +665,11 @@ tune_grid = expand.grid(
   min_child_weight = c(2, 4, 6),
   subsample = c(0.5,0.8)
 )
+```
+
+### Run hyperparameter tuning
+
+```{r}
 
 full_model <- xgboost_hyperparameter_tuning(
   data = train_val %>% select(TOC, id, any_of(features)), 
@@ -674,7 +682,9 @@ full_model <- xgboost_hyperparameter_tuning(
 
 ```
 
-## Look at feature importance for each fold
+### Checking Results
+
+#### Feature Importance
 
 ```{r}
 importance_list <- lapply(seq_along(full_model), function(i) {
@@ -689,16 +699,15 @@ importance_list <- lapply(seq_along(full_model), function(i) {
 print(importance_list)
 ```
 
-## Look at shapley importance
+#### Shapley Importance
 
 ```{r}
 
 # Function to plot SHAP values for a given fold
-plot_shap <- function(fold_id, train_val_df, fold_model, top_n = 3) {
+plot_shap <- function(fold_set, train_val_df, fold_model, top_n = 3) {
   # Predictions on validation/training set
-  val_set_name <- paste0("val_set_", fold_id)
-  val_data <- train_val_df %>% filter(id %in% get(val_set_name))
-  train_data <- train_val_df %>% filter(!(id %in% get(val_set_name)))
+  val_data <- train_val_df %>% filter(fold_id == fold_set)
+  train_data <- anti_join(train_val_df, val_data, by = "fold_id")
   
   dtrain <- as.matrix(train_data[, features])
   
@@ -709,356 +718,113 @@ plot_shap <- function(fold_id, train_val_df, fold_model, top_n = 3) {
     shap_contrib = shap_values$shap_score,
     X_train = as.matrix(train_data[, features])
   )
-  
-  # --- 1. SHAP summary plot (global view)
-  return(shap.plot.summary(shap_long))
-  
+  #return shapley plot
+  shap.plot.summary(shap_long)
 }
 
-plots <- map(1:3, ~ plot_shap(
-  fold_id = .x,
-  fold_model = model[[.x]],
+map(1:3, ~ plot_shap(
+  fold_set = .x,
+  fold_model = full_model[[.x]]$model,
   train_val_df = train_val,
   top_n = 3
-))
-
-ggarrange(plotlist = plots, ncol = 3)
+))%>%
+  wrap_plots(., ncol = 1, guides = "collect") &
+  theme(legend.position = "bottom")
 
 ```
 
-
-
-## Create plots of training + validation
+### Plots of TV Performance
+Now let's look at our performance in TV space.
 
 ```{r}
 
+hyperparam_tv_plots <- map(1:3, ~plot_tv_fold_perf(fold_set = .x,
+                             train_val_df = train_val,
+                             fold_model = full_model[[.x]]$model, # a list where each element is a model for that fold
+                             target_col = "TOC", units = "mg/L")
+                            )
 
-# Create a list to store all fold plots
-fold_perf_plot <- list()
-for (i in 1:3) {
-  fold_perf_plot[[i]] <- plot_fold_performance(fold_id = i, fold_model = model[[i]], train_val_df = train_val, target_col = "TOC", units = "mg/L")
-}
-ggarrange(plotlist = fold_perf_plot, ncol = 2, nrow = 2, common.legend = T, legend = "bottom")
-
+hp_tv_plot<- wrap_plots(hyperparam_tv_plots, ncol = 1, guides = "collect")&
+  theme(legend.position = "bottom")
+hp_tv_plot
 #ggsave("data/upper_clp_dss/figures/toc_modeling/performance/toc_model_fold_validation_performance.png", width = 14, height = 10)
 
 ```
 
-# Evaluate on Test Set
+#### Against base hyperparameters
 
-DO NOT Retrain without large changes
-
-## Calculate performance and apply to testing set
+We should hope that all our tuning efforts have improved the model!! 
 
 ```{r}
-# Convert testing and train_val datasets to matrices for prediction
+# Compare best hyperparameter model to default hyperparameter model
+final_plot <- wrap_plots(
+  ft_tv_plot,
+  hp_tv_plot,
+  ncol = 2,
+  guides = "collect"
+) &
+  theme(legend.position = "bottom")
+final_plot <- final_plot + 
+  plot_annotation(
+    title = "Model Performance Comparison: Default (left) vs Tuned Hyperparameters (right)"
+  )
 
-test_matrix <- testing[, features]%>%
-  mutate(across(everything(), as.numeric)) %>%
-  as.matrix()
-
-train_matrix <- train_val[, features]%>%
-  mutate(across(everything(), as.numeric)) %>%
-  as.matrix()
-
-# Add predictions from each fold model as new columns
-for (i in seq_along(model)) {
-  fold_model <- model[[i]]
-  col_name <- glue("{target}_guess_fold{i}")
-  testing[[col_name]] <- predict(fold_model, test_matrix)
-  train_val[[col_name]] <- predict(fold_model, train_matrix)
-}
-
-fold_cols <- glue("{target}_guess_fold{seq_along(model)}")
-ensemble_col <- glue("{target}_guess_ensemble")
-testing[[ensemble_col]] <- rowMeans(testing[, fold_cols])
-train_val[[ensemble_col]] <- rowMeans(train_val[, fold_cols])
-
-#Join
-all_preds <- bind_rows(testing%>%mutate(group = "Test"), 
-                       train_val%>%mutate(group = "Train"))
-
-#compute metrics
-metrics_tbl <- map_dfr(c(seq_along(model), "mean"), function(f) {
-  col_name <- if (f == "mean") glue(ensemble_col) else glue("{target}_guess_fold{f}")
-  
-  all_preds %>%
-    group_by(group) %>%
-    summarise(
-      model = as.character(f),
-      rmse = rmse(.data[[target]], .data[[col_name]]),
-      mae  = mae(.data[[target]], .data[[col_name]]),
-      bias = bias(.data[[target]], .data[[col_name]]),
-      .groups = "drop"
-    )%>%
-    ungroup()
-})%>%
-  arrange(group)
-
-metrics_tbl
-
+final_plot
 
 ```
 
+Looking at the plots, we can see that the tuned hyperparameter model has improved performance in all folds compared to the default hyperparameter model. The validation RMSE has decreased in all folds but it foes look like model fold three is slightly less accurate at the higher ends (possible overtraining?). Overall, this is a good sign that our tuning efforts have paid off!
+
+# Evaluate on Test Set
+
+We should only do this once we feel good about our model and are ready to see how it performs on the unseen test set. This should only be run after big changes to the model or if we get new data (ie The model should be in a "final/working" version)
 
 ## Visualize Train Val Test
 
+### Individual folds
+
 ```{r}
-# Function to generate a plot for a given prediction column
-plot_train_val_test <- function( train_val_df, test_df, target_col, fold_id) {
-  
-  if (fold_id == "Ensemble") {
-    # --- Collect all test predictions from every fold ---
-    test_preds_all <- map_dfc(model, function(m) {
-      predict(m, as.matrix(test_df[, features]))
-    })
-    colnames(test_preds_all) <- paste0("fold_", seq_along(model))
-    
-    test_preds_all <- test_preds_all %>%
-      mutate(id = test_df$id,
-             observed = test_df[[target_col]])
-    
-    test_summary <- test_preds_all %>%
-      pivot_longer(starts_with("fold_"), names_to = "fold", values_to = "pred") %>%
-      group_by(id, observed) %>%
-      summarise(
-        pred_mean = mean(pred, na.rm = TRUE),
-        pred_min  = min(pred, na.rm = TRUE),
-        pred_max  = max(pred, na.rm = TRUE),
-        .groups = "drop"
-      )
-    
-    # --- Training predictions (mean across folds) ---
-    train_preds_all <- map_dfc(model, function(m) {
-      predict(m, as.matrix(train_val_df[, features]), iteration_range = c(1, m$best_iteration))
-    })
-    colnames(train_preds_all) <- paste0("fold_", seq_along(model))
-    
-    train_summary <- train_preds_all %>%
-      mutate(id = train_val_df$id,
-             sensor_datetime = train_val_df$sensor_datetime,
-             observed = train_val_df[[target_col]], 
-             pred_mean = rowMeans(select(., starts_with("fold_")), na.rm = TRUE))
-    
-    # --- Metrics ---
-    train_rmse <- rmse(train_summary$observed, train_summary$pred_mean) %>% round(2)
-    train_mae  <- mae(train_summary$observed, train_summary$pred_mean) %>% round(2)
-    test_rmse  <- rmse(test_summary$observed, test_summary$pred_mean) %>% round(2)
-    test_mae   <- mae(test_summary$observed, test_summary$pred_mean) %>% round(2)
-    
-    # --- Axis limits ---
-    min_val <- min(c(test_summary$observed, train_summary$observed), na.rm = TRUE)
-    max_val <- max(c(test_summary$observed, train_summary$observed), na.rm = TRUE)
-    plot_range <- max_val - min_val
-    
-    # annotation box coords
-    box_width <- plot_range * 0.4
-    box_height <- plot_range * 0.2
-    box_xmin <- min_val + plot_range * 0.02
-    box_xmax <- box_xmin + box_width
-    box_ymax <- max_val - plot_range * 0.02
-    box_ymin <- box_ymax - box_height
-    text_x <- (box_xmin + box_xmax) / 2
-    text_y1 <- box_ymax - box_height * 0.15
-    text_y2 <- box_ymax - box_height * 0.5
-    text_y3 <- box_ymax - box_height * 0.85
-    
-    # --- Plot ---
-    p <- ggplot() +
-      geom_abline(intercept = 0, slope = 1, linetype = "dashed", size = 1.5) +
-      
-      # Training points (blue circles)
-      geom_point(
-        data = train_summary,
-        aes(x = observed, y = pred_mean,
-            color = "Training", shape = "Training"),
-        size = 4, alpha = 0.7
-      ) +
-      
-      # Test points (pink triangles + errorbars)
-      geom_errorbar(
-        data = test_summary,
-        aes(x = observed, ymin = pred_min, ymax = pred_max),
-        width = 0.2, color = "#E70870", alpha = 0.6
-      ) +
-      geom_point(
-        data = test_summary,
-        aes(x = observed, y = pred_mean,
-            color = "Testing", shape = "Testing"),
-        size = 4, alpha = 0.9
-      ) +
-      # Annotation box
-      annotate("rect", xmin = box_xmin, xmax = box_xmax, ymin = text_y3, ymax = box_ymax ,
-               fill = "white", color = "black", alpha = 1, linewidth = 0.5) +
-      annotate("text", x = text_x, y = text_y1,
-               label = paste0("Training samples: n = ", nrow(train_summary),
-                              "\nTesting samples: n = ", nrow(test_summary)),
-               color = "black", size = 4, fontface = 2) +
-      annotate("text", x = text_x, y = text_y2,
-               label = paste0("Testing RMSE: ", test_rmse,
-                              " mg/L\nTesting MAE: ", test_mae, " mg/L"),
-               color = "black", fontface = 2, size = 4.5) +
-      
-      labs(
-        x = "Measured TOC (mg/L)",
-        y = "Predicted TOC (mg/L)",
-        title = "Ensemble Predictions (Mean ± Range across folds)",
-        subtitle = "CLP Samples Only",
-        color = "Model Group", shape = "Model Group"
-      ) +
-      scale_color_manual(values = c("Training" = "#002EA3", "Testing" = "#E70870")) +
-      scale_shape_manual(values = c("Training" = 16, "Testing" = 17)) + # 16=circle, 17=triangle
-      xlim(min_val, max_val) +
-      ylim(min_val, max_val) +
-      theme_bw(base_size = 20) +
-      ROSS_theme +
-      theme(
-        plot.title = element_text(hjust = 0.5, face = "bold", size = 18), 
-        axis.title.x = element_text(size = 16),
-        axis.title.y = element_text(size = 16), 
-        legend.text = element_text(size = 14),
-        legend.title = element_text(size = 16, face = "bold")
-      )
-    
-    
-    
-    return(p)
-  }
-  
-  
-  val_set_name <- paste0("val_set_", fold_id)
-  val_set <- train_val_df %>% filter(id %in% get(val_set_name))
-  train_set <- train_val_df %>% filter(id %nin% get(val_set_name))
-  test_set <- test_df 
-  
-  
-  #use the appropirate fold model to predict target column
-  fold_model <- model[[fold_id]]
-  features <- fold_model$feature_names
-  # Create matrix for train/val/test datasets
-  val_matrix <- val_set[, features]%>%
-    mutate(across(everything(), as.numeric)) %>%
-    as.matrix()
-  train_matrix <- train_set[, features]%>%
-    mutate(across(everything(), as.numeric)) %>%
-    as.matrix()
-  test_matrix <- testing[, features]%>%
-    mutate(across(everything(), as.numeric)) %>%
-    as.matrix()
-  # Define prediction column name
-  pred_col <- glue("{target}_guess_fold{fold_id}")
-  
-  # make predictions
-  val_set[[pred_col]] <-  predict(fold_model, val_matrix)
-  val_set$group <-  "Validation"
-  
-  train_set[[pred_col]] <-  predict(fold_model, train_matrix)
-  train_set$group <-  "Train"
-  
-  test_set[[pred_col]] <-  predict(fold_model, test_matrix)
-  test_set$group <-  "Test"
-  
-  data <- bind_rows(train_set, val_set, test_set)
-  
-  # Calculate RMSE/MAE for annotation
-  train_rmse <- rmse(train_set[[target_col]],train_set[[pred_col]]) %>% round(2)
-  val_rmse <- rmse(val_set[[target_col]],val_set[[pred_col]]) %>% round(2)
-  train_mae <- mae(train_set[[target_col]], train_set[[pred_col]]) %>% round(2)
-  val_mae <- mae(val_set[[target_col]], val_set[[pred_col]]) %>% round(2)
-  test_rmse <- rmse(test_set[[target_col]], test_set[[pred_col]]) %>% round(2)
-  test_mae <- mae(test_set[[target_col]], test_set[[pred_col]]) %>% round(2)
-  
-  
-  min_val <- min(data[[target_col]], na.rm = TRUE)
-  max_val <- max(data[[target_col]], na.rm = TRUE)
-  plot_range <- max_val - min_val
-  
-  box_width <- plot_range * 0.5
-  box_height <- plot_range * 0.2
-  box_xmin <- min_val + plot_range * 0.02
-  box_xmax <- box_xmin + box_width
-  box_ymax <- max_val - plot_range * 0.02
-  box_ymin <- box_ymax - box_height
-  text_x <- (box_xmin + box_xmax) / 2
-  text_y1 <- box_ymax - box_height * 0.15
-  text_y2 <- box_ymax - box_height * 0.5
-  text_y3 <- box_ymax - box_height * 0.85
-  
-  ggplot(data, aes(x = .data[[target_col]], y = .data[[pred_col]], color = group)) +
-    geom_abline(intercept = 0, slope = 1, linetype = "dashed", size = 1.2) +
-    
-    # Training points (all same shape)
-    geom_point(
-      data = filter(data, group == "Train"),
-      shape = 16,  # solid circle
-      size = 4,
-      alpha = 0.7) +  
-    geom_point(
-      data = filter(data, group == "Validation"),
-      shape = 15,  # solid square
-      size = 4,
-      alpha = 0.7) + 
-    geom_point( # Testing points (shape by id)
-      data = filter(data, group == "Test"),
-      shape = 17,
-      #aes(shape = id),
-      size = 4,
-      alpha = 0.99
-    ) +
-    annotate("rect", xmin = box_xmin, xmax = box_xmax, ymin = box_ymin, ymax = box_ymax,
-             fill = "white", color = "black", alpha = 1, linewidth = 0.5) +
-    annotate("text", x = text_x, y = text_y1, label = paste0("Model Fold: ", fold_id),
-             color = "black", size = 4.5, fontface = 2) +
-    annotate("text", x = text_x, y = text_y2, label = paste0("Validation RMSE: ", val_rmse, 
-                                                             " mg/L, MAE:", val_mae, " mg/L"),
-             color = "black", size = 3, fontface = 2) +
-    annotate("text", x = text_x, y = text_y3, label = paste0("Testing RMSE: ", test_rmse, 
-                                                             " mg/L, MAE:", test_mae, " mg/L"),
-             color = "black", fontface = 2, size = 3.5) +
-    scale_color_manual(values = c("Train" = "#002EA3","Validation" = "#FFCA3A","Test" = "#E70870"),
-                       breaks = c("Train", "Validation", "Test"))+
-    #scale_shape_manual(values = c("ROSS" = 15, "FC" = 17, "Virridy" = 19)) +
-    labs(
-      x = "Measured TOC (mg/L)",
-      y = "Predicted TOC (mg/L)",
-      subtitle = "CLP Samples Only",
-      color = "Model Group",
-      #shape = "Site",
-      title = 
-    ) +
-    xlim(min_val, max_val) +
-    ylim(min_val, max_val) +
-    theme(
-      plot.title = element_text(hjust = 0.5, face = "bold"))+
-    ROSS_theme
-}
-
-# 1. Plot each fold
-for (i in seq_along(fold_cols)) {
-  p <- plot_train_val_test(train_val, testing,"TOC", fold_id = i)
-  plot(p)
-  ggsave(glue("data/upper_clp_dss/figures/toc_modeling/performance/ross_only_model_fold_{i}.png"),
-         plot = p, width = 10, height = 6, dpi = 500)
-}
-
-# 2. Single plot with all four folds
-fold_plots <- lapply(seq_along(fold_cols), function(i) {
-  p <- plot_train_val_test(train_val, testing,"TOC", fold_id = i)
+plots<- map(1:3, ~{
+    plot_tvt_fold_perf(train_val, testing, fold_set = .x, fold_model = full_model[[.x]]$model, target_col = "TOC", units = "mg/L", subtitle_arg = "CLP Samples only")
 })
+plots
+  # ggsave(glue("data/upper_clp_dss/figures/toc_modeling/performance/ross_only_model_fold_{i}.png"),
+  #        plot = p, width = 10, height = 6, dpi = 500)
 
-ggarrange(plotlist = fold_plots, ncol = 2, nrow = 2, common.legend = TRUE, legend = "top")
-ggsave("data/upper_clp_dss/figures/toc_modeling/performance/ross_only_model_all_folds_TVT.png",
-       width = 14, height = 8, dpi = 500)
-
-# 2. Plot ensemble
-ensemble <- plot_train_val_test(train_val, testing,"TOC", fold_id = "Ensemble")
-plot(ensemble)
-ggsave("data/upper_clp_dss/figures/toc_modeling/performance/ross_only_model_ensemble.png",
-       plot = ensemble, width = 12, height = 10, dpi = 500)
 ```
 
+### All folds together
 
-## Save files (smaller)
+```{r}
+# Single plot with all folds
+wrap_plots(plots, ncol = 2, guides = "collect") &
+  theme(legend.position = "bottom")
+
+# ggsave("data/upper_clp_dss/figures/toc_modeling/performance/ross_only_model_all_folds_TVT.png",
+#        width = 14, height = 8, dpi = 500)
+```
+
+### Ensemble predictions
+
+```{r}
+# Plot ensemble
+ensemble <- plot_tvt_ensemble_perf(train_val_df = train_val,
+                                   test_df = testing,
+                                   fold_models = map(full_model, "model"),
+                                   target_col = "TOC",
+                                   units = "mg/L",
+                                   subtitle_arg = "CLP Samples only")
+plot(ensemble)
+# ggsave("data/upper_clp_dss/figures/toc_modeling/performance/ross_only_model_ensemble.png",
+#        plot = ensemble, width = 12, height = 10, dpi = 500)
+```
+
+## Visualize performance in timeseries space
+
+COMING SOON! Need to functionalize aspects of 04 script to make this concise enough
+
+# Save final models
+We will extract just the model objects from the list to save space.
 
 ```{r}
 
