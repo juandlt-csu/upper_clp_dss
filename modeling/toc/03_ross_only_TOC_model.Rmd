@@ -122,8 +122,8 @@ target  = "TOC"
 features <- setdiff(colnames(all_matches_norm), c(id_cols, target))
 
 all_matches_trimmed <- all_matches_norm%>%
-  filter(!(id == "cbri" & between(sensor_datetime, "2024-10-08", "2024-10-10")))%>% #exclude a cbri sample taken during release
-  filter(!(id == "pman" & between(sensor_datetime, "2025-05-28", "2025-06-01")))%>% #exclude a pman sample with bad sensor data
+  filter(!(id == "cbri" & between(sensor_datetime, ymd("2024-10-08"), ymd("2024-10-10"))))%>% #exclude a cbri sample taken during release
+  filter(!(id == "pman" & between(sensor_datetime, ymd("2025-05-28"), ymd("2025-06-01"))))%>% #exclude a pman sample with bad sensor data
   filter( id %nin% c("springcreek", "boxcreek"))
 
 
