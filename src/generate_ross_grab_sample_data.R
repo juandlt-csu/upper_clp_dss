@@ -19,7 +19,7 @@
 #'
 #' **Site Name Updates:**
 #' The function handles two types of site name changes:
-#' 1. **Virridy sensor period corrections** (before 2024-11-30): Appends "_virridy" suffix
+#' 1. **Lower Poudre Virridy sensor colocation period corrections** (before 2024-11-30): Appends "_virridy" suffix
 #'    to distinguish data collected during Virridy sensor deployments
 #' 2. **Legacy name updates**: Maps old site names to current naming conventions
 #'    (e.g., "lincoln" → "udall", "legacy" → "salyer")
