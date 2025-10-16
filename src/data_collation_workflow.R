@@ -130,13 +130,12 @@ sites <- c("pbd")
 
 # When we are getting all the 2025 data across the network for modeling, use these sites
 #sites <- c("pbd", "salyer", "udall", "riverbend", "cottonwood", "springcreek" , "elc", "boxcreek",  "archery", "riverbluffs")
-source(file = here("src", "api_puller.R"))
 
 message(paste("....Collation Step Update:", "Attempting to pull data from HydroVu API"))
 walk(sites,
      function(site) {
        message("Requesting HV data for: ", site)
-       api_puller(
+       fcw.qaqc::api_puller(
          site = site,
          start_dt = utc_start_DT, # api puller needs UTC dates
          end_dt = utc_end_DT,
