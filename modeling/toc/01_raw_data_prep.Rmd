@@ -5,36 +5,32 @@ date: "`r Sys.Date()`"
 output: html_document
 ---
 
+# Setup & Custom Functions
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 options(dplyr.summarise.inform = FALSE)
+# load libraries
 source("src/setup_libraries.R")
-
-fix_sites <- function(df) {
-  fixed_df <- df %>%
-    mutate(site = tolower(site)) %>%
-    # renaming all the sites, just in case
-    mutate(site = case_when(
-      grepl("tamasag", site, ignore.case = TRUE) ~ str_replace(site, "tamasag", "bellvue"),
-      grepl("legacy", site, ignore.case = TRUE) ~ str_replace(site, "legacy", "salyer"),
-      grepl("lincoln", site, ignore.case = TRUE) ~ str_replace(site, "lincoln", "udall"),
-       grepl("timberline", site, ignore.case = TRUE) ~ str_replace(site, "timberline", "riverbend"),
-      grepl("prospect", site, ignore.case = TRUE) ~ str_replace(site, "prospect", "cottonwood"),
-      grepl("timberline", site, ignore.case = TRUE) ~ str_replace(site, "timberline", "riverbend"),
-      grepl("prospect", site, ignore.case = TRUE) ~ str_replace(site, "prospect", "cottonwood"),
-      grepl("boxelder", site, ignore.case = TRUE) ~ str_replace(site, "boxelder", "elc"),
-       grepl("archery", site, ignore.case = TRUE) ~ str_replace(site, "archery", "archery"),
-      grepl("archery", site, ignore.case = TRUE) ~ str_replace(site, "archery", "archery"),
-      grepl("river bluffs", site, ignore.case = TRUE) ~ str_replace(site, "river bluffs", "riverbluffs"),
-      TRUE ~ site)
-    )
-  return(fixed_df)
-}
-
+# custom function to reduce overflagging
+source("src/apply_cleaning_filters.R")
+# custom function to apply interpolation for missing data
+source("src/apply_interpolation_missing_data.R")
+# custom function to apply low pass binomial filter
+source("src/apply_low_pass_binomial_filter.R")
+# custom function to calculate medians in data
+source("src/apply_timestep_median.R")
+# custom function to calculate lagged parameters
+source("src/calc_lagged_parameter.R")
+#custom function to apply fdom temp correction
+source("src/apply_fdom_temp_corr.R")
 ```
 
+The purpose of this script is to pull in all verified sensor data from 2023 and 2024, as well as auto QAQC'ed data from 2025, apply some additional cleaning steps (interpolation, smoothing, hourly median) and then combine into a single long format dataset as well as a wide format dataset with some additional lagged parameters calculated. Finally, we will add in flow data from the Canyon Mouth guage. 
 
-# Clean up sensor data
+This script also includes the loading/parsing of ROSS and FC sample data into a single file: "data/upper_clp_dss/modeling/ROSS_FC_water_chemistry.parquet"
+
+# Pull in & Clean up sensor data
 
 ## Set Data Targets (sites and parameters)
 
@@ -52,10 +48,9 @@ site_level_string <- paste(site_levels, collapse = "|")
 parameter_level_string <- paste(parameter_levels, collapse = "|")
 ```
 
+## 2023 dataset
 
-merge 2023 + 2024 data for sites OI
-
-# Loading 2023 data
+2023 data was manually verified after passing auto-QAQC, data is binned into two categories of PASS or FAIL based on the flag. If a flagged point is PASSED, it is of poor quality and should be omitted from the final dataset. If a flagged point is FAILED, it is of good quality and should be retained in the final dataset. If a non-flagged point is PASSED, it is of good quality and should be retained in the final dataset. If a non-flagged point is FAILED, it is of poor quality and should be omitted from the final dataset.
 
 ```{r}
 #load in 2023 verified data
@@ -68,7 +63,7 @@ verified_names <- list.files(
 finalized_dataset_2023 <- verified_names %>% 
   map(\(file_path){
     site_parameter_df <- read_rds(file_path) %>%
-      fix_sites()
+      fix_site_names()
     return(site_parameter_df)
   }) %>%
   set_names(map_chr(., ~ paste0(unique(.x$site), "-", unique(.x$parameter)))) %>%
@@ -82,7 +77,7 @@ post_verified_names <- list.files(
 post_finalized_dataset_2023 <- post_verified_names %>% 
   map(\(file_path){
     site_parameter_df <- read_rds(file_path) %>%
-      fix_sites()
+      fix_site_names()
     return(site_parameter_df)
   }) %>%
   set_names(map_chr(., ~ paste0(unique(.x$site), "-", unique(.x$parameter)))) %>%
@@ -98,7 +93,7 @@ dataset_2023 <- c(
 all_data_2023 <- dataset_2023 %>%
   bind_rows() %>% 
   data.table() %>%
-  fix_sites() %>% 
+  fix_site_names() %>% 
   mutate(
     clean_mean = case_when(
       is.na(flag) & verification_status == "PASS" ~ mean,
@@ -119,13 +114,34 @@ all_data_2023 <- dataset_2023 %>%
   ) %>%
   #fixing virridy site names
   mutate(site = gsub(" virridy","_virridy", site  ))%>%
-  dplyr::select(DT_round, DT_join, site, parameter, mean = clean_mean, flag = clean_flag,last_site_visit) 
+  dplyr::select(DT_round, DT_join, site, parameter, mean = clean_mean, flag = clean_flag,last_site_visit)
 ```
 
-# Loading in 2024 dataset (verification in progress)
+### Cleaning tasks (interpolation, smoothing, hourly median)
 
 ```{r}
-#load in 2023 verified data
+all_data_2023_final <- apply_interpolation_missing_data(df = all_data_2023, new_value_col = "mean_filled", max_gap = 4, method = "spline")%>%
+  apply_low_pass_binomial_filter(value_col = "mean_filled", new_value_col = "smoothed_mean")%>%
+  apply_timestep_median(df = ., timestep  = "1 hour", value_col = "smoothed_mean", new_value_col = "hourly_median")
+
+```
+
+### Save 2023 Data & Clean Up
+
+```{r}
+write_parquet(all_data_2023_final, paste0("data/upper_clp_dss/sensor/prepped/all_2023_sensor_data_", Sys.Date(),".parquet"))
+
+rm(all_data_2023, dataset_2023, finalized_dataset_2023, post_finalized_dataset_2023, post_verified_names)
+gc()
+```
+
+
+## 2024 dataset
+
+This dataset's verification is still in progress and may need to be rerun as additional data is confirmed. This data has three possible verification statuses: PASS, FLAGGED, and OMIT. If a point is marked as OMIT, it should be removed from the final dataset. If a point is marked as PASS, it is of good quality and should be retained in the final dataset. If a point is marked as FLAGGED, it is of medium quality and should be used cautiously/smoothed in the final dataset. Unverified data points are retained if they do not have an auto-flag, but are removed if they do have an auto-flag.
+
+```{r}
+#load in 2024 verified data
 # Pulling in the manually verified data
 verified_names <- list.files(
   here("data", "manual_data_verification", "2024_cycle", 
@@ -190,14 +206,34 @@ all_data_2024 <- dataset_2024 %>%
     DT_round >= as.POSIXct("2024-01-01 00:00:00", tz = "MST") & DT_round <= as.POSIXct("2024-12-31 11:59:59", tz = "MST")
   ) %>%
   mutate(last_site_visit = with_tz(last_site_visit, tzone = "MST"))%>%
-  dplyr::select(DT_round, DT_join, site, parameter, mean = clean_mean, flag = clean_flag, last_site_visit) 
+  dplyr::select(DT_round, DT_join, site, parameter, mean = clean_mean, flag = clean_flag, last_site_visit)
+```
+
+
+### Cleaning tasks (interpolation, smoothing, hourly median)
+
+```{r}
+all_data_2024_final <- all_data_2024%>%
+  apply_interpolation_missing_data(df = ., new_value_col = "mean_filled", max_gap = 4, method = "spline")%>%
+  apply_low_pass_binomial_filter(value_col = "mean_filled", new_value_col = "smoothed_mean")%>%
+  apply_timestep_median(df = ., timestep  = "1 hour", value_col = "smoothed_mean", new_value_col = "hourly_median")
+
+```
+
+### Save 2024 Data & Clean Up
+
+```{r}
+write_parquet(all_data_2024_final, paste0("data/upper_clp_dss/sensor/prepped/all_2024_sensor_data_", Sys.Date(),".parquet"))
+
+rm(all_data_2024, dataset_2024, pre_verified_dataset_2024, pre_verified_names, verified_dataset_2024, verified_names)
+gc()
 ```
 
 ## 2025 dataset (auto qaqc only)
 
 Skip to `Loading in pre-processed 2025 data` if the auto qaqc pipeline has already been run for 2025
 
-### Non Hydro Vu site pull
+### Non HydroVu log parsing
 
 These sites do not livestream to HydroVu so all the data is stored on Vulink or AquaTroll logs. The Vulink logs cannot be uploaded to HydroVu so we will pull them in manually here
 
@@ -255,7 +291,7 @@ hydrovu_creds_file <- "creds/HydroVuCreds.yml"
 
 # Configure date range for data retrieval
 start_date <- "2025-01-01 00:00:00"  # MST
-end_date <- "2025-07-05 23:59:59"    # MST
+end_date <- "2025-12-05 23:59:59"    # MST
 
 time_zone = "America/Denver"
 
@@ -321,7 +357,6 @@ mst_end <- ymd_hms(end_date, tz = time_zone)
 
 
 ###### ALREADY RUN for 07/2025 #######
-# source("src/api_puller.R")
 # 
 # # pull data for each site
 # walk(sites_to_process,
@@ -499,13 +534,13 @@ for (chunk_idx in seq_along(intrasensor_data_chunks)) {
 iwalk(intrasensor_flags_list, 
       ~write_csv(.x, file.path(temp_directory, paste0(.y, ".csv"))))
 
-#custom network check while fcw.qaqc package is being updated
-source("src/network_check.R")
+
+site_order_list <- load_site_order(here("data", "field_notes", "qaqc", "site_order_2025.yml"))
 
 # apply network-level quality control
 network_flags <- intrasensor_flags_list %>%
   # network check compares patterns across sites
-  purrr::map(~network_check(df = .,network = "all", intrasensor_flags_arg = intrasensor_flags_list)) %>%
+  purrr::map(~network_check(df = .,network = "all", intrasensor_flags_arg = intrasensor_flags_list, site_order_arg = site_order_list)) %>%
   rbindlist(fill = TRUE) %>%
   # clean up flag column formatting
   tidy_flag_column() %>%
@@ -547,7 +582,6 @@ iwalk(v_final_flags,
 If auto qaqc has already been run for 2025, skip to this chunk
 
 ```{r}
-
 #load in 2025 unverified but Auto QAQC'ed data
 # Pulling in the manually verified data
 
@@ -569,24 +603,6 @@ flagged_2025_dataset <- flagged_2025_files %>%
 all_data_2025 <- flagged_2025_dataset %>%
   bind_rows() %>% 
   data.table() %>%
-  mutate(
-    clean_mean = case_when(
-      #verified data
-      !is.na(mal_flag)  ~ NA,
-      !is.na(auto_flag) & parameter == "FDOM Fluorescence" & auto_flag == "drift" ~ mean, # FDOM over flagged for drift
-      !is.na(auto_flag) & parameter == "FDOM Fluorescence" & auto_flag == "outside of seasonal range" ~ mean, # FDOM over flagged for drift
-            !is.na(auto_flag) & parameter == "Turbidity" & auto_flag == "outside of seasonal range" & mean <= 10 & mean == 0 ~ mean, # Turbidity overflagged for turb at low values, 
-        !is.na(auto_flag) & parameter == "Chl-a Fluorescence" & auto_flag == "outside of seasonal range" & mean <= 2 & site == "sfm" ~ mean, # SFM Chl-a overflagged in spring values
-      !is.na(auto_flag) & auto_flag == "outside of seasonal range" & site == "chd" & parameter != "pH"~ mean, 
-      # CHD overflagged across most parameters except pH
-      
-      is.na(auto_flag) & is.na(mal_flag) ~ mean),
-    clean_flag = case_when(
-      !is.na(mal_flag)  ~ mal_flag,
-      !is.na(auto_flag) ~ auto_flag,
-      is.na(auto_flag) & is.na(mal_flag) ~ NA
-    )
-  ) %>%
   filter( !is.na(site),
     # Filter based on DT. The 2025 data is in UTC
     DT_round >= as.POSIXct("2025-01-01 00:00:00", tz = "UTC") & DT_round <= as.POSIXct("2025-12-31 11:59:59", tz = "UTC")
@@ -595,98 +611,329 @@ all_data_2025 <- flagged_2025_dataset %>%
   mutate(
     DT_round = with_tz(DT_round, tz = "MST"),
     DT_join = as.character(DT_round), 
-    last_site_visit = with_tz(last_site_visit, "MST")
+    last_site_visit = with_tz(last_site_visit, "MST"), 
+    mean = if_else(is.na(mal_flag), mean, NA) # remove reported sensor malfunctions
   )%>%
-  dplyr::select(DT_round, DT_join, site, parameter, mean = clean_mean, flag = clean_flag, last_site_visit) 
-
+  dplyr::select(DT_round, DT_join, site, parameter, mean , auto_flag,mal_flag,  last_site_visit)
 ```
 
 
-
-# Bind all sensor data & create smoothed mean for turb/chl-a
-
+### Cleaning tasks (reducing overflagging, interpolation, smoothing, hourly median)
 ```{r}
-source("src/low_pass_filter.R")
-
-all_data_2023_smooth <- all_data_2023 %>%
-  split(f = list(.$site, .$parameter), sep = "-") %>%
-  keep(~nrow(.) > 0) %>%
-  map(~arrange(., DT_round) %>% low_pass_filter(.)) %>%
-  bind_rows()
-
-all_data_2024_smooth <- all_data_2024%>%
-  split(f = list(.$site, .$parameter), sep = "-") %>%
-   keep(~nrow(.) > 0)%>%
-  map(~arrange(., DT_round) %>% low_pass_filter(.)) %>%
-  bind_rows()
-
-all_data_2025_smooth <- all_data_2025%>%
-  split(f = list(.$site, .$parameter), sep = "-") %>%
-   keep(~nrow(.) > 0)%>%
-  map(~arrange(., DT_round) %>% low_pass_filter(.)) %>%
-  bind_rows()
-
-all_sensor_data <- bind_rows(all_data_2023_smooth, all_data_2024_smooth, all_data_2025_smooth)%>%
-  mutate(hours_since_last_visit = as.numeric(difftime(DT_round, last_site_visit, units = "hours")), 
-         value = case_when(
-           !is.na(smoothed_mean) ~ smoothed_mean, 
-           !is.na(mean) ~ mean, 
-           is.na(mean)& is.na(smoothed_mean) ~ NA
-         ))%>%
-  filter(!is.na(value))
+all_data_2025_final <- all_data_2025%>%
+  apply_cleaning_filters(df = ., new_value_col = "mean_cleaned")%>%
+  apply_interpolation_missing_data(df = ., value_col = "mean_cleaned", new_value_col = "mean_filled", max_gap = 4, method = "spline")%>%
+  apply_low_pass_binomial_filter(df = ., value_col = "mean_filled", new_value_col = "smoothed_mean")%>%
+  apply_timestep_median(df = ., timestep  = "1 hour", value_col = "smoothed_mean", new_value_col = "hourly_median")
   
-write_parquet(all_sensor_data, "data/upper_clp_dss/sensor/prepped/all_sensor_data_long.parquet")
 ```
 
-# Plot to double check
+###  Save 2025 Data
 ```{r}
- all_sensor_data%>%
-  #filter(parameter == "Turbidity")%>%
-  filter( site %in% c("chd"))%>%
-  filter(year(DT_round) == 2025)%>%
-  ggplot(aes(x = DT_round))+
-  geom_point( aes(y = mean, color = flag))+
-  #geom_line(aes(y = smoothed_mean), color = "blue")+
-  #scale_y_log10()+
-  facet_wrap(  ~parameter, scales = "free_y")+
-  theme_minimal()+
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
+write_parquet(all_data_2025_final, paste0("data/upper_clp_dss/sensor/prepped/all_2025_sensor_data_", Sys.Date(),".parquet"))
+
+rm(all_data_2025, flagged_2025_dataset, flagged_2025_files)
+gc()
+```
+
+# Create long sensor dataset
+
+```{r}
+
+all_sensor_data <- bind_rows(all_data_2023_final, all_data_2024_final, all_data_2025_final)%>%
+  select(-auto_flag, -mal_flag, -clean_flag, - flag )
+  
+write_parquet(all_sensor_data, paste0("data/upper_clp_dss/sensor/prepped/all_sensor_data_long", Sys.Date(), ".parquet"))
+```
+
+# Clean up space/memory
+```{r}
+
+#remove everything from memory
+rm(list=setdiff(ls(), c("calc_lagged_parameter","apply_fdom_temp_corr")))
+gc()
 
 ```
+
+
 # Create wide sensor dataset
 
+This comes from the script above and should be updated when an API pull, QAQC is updated or as more data is verified.
+
+I think we could have a function (`update_sensor_data()`) that would essentially run all the code above + code in this section and saves it to come consistent file path. We could then have a `load_sensor_data()` function that always pulls in the most recent data.
+
+### Get most recent files
+
 ```{r}
-all_sensor_data_wide <- all_sensor_data%>%
-  filter(parameter %in% c("Chl-a Fluorescence","Specific Conductivity","Temperature","Turbidity","FDOM Fluorescence", "Depth"))%>%
-  group_by(site, DT_round, parameter, hours_since_last_visit)%>%
-  summarise(value = mean(value, na.rm = TRUE), .groups = "drop")%>%
-  ungroup()%>%
-  pivot_wider(id_cols = c("site", "DT_round", "hours_since_last_visit"), names_from = parameter, values_from = value)%>%
-  mutate(across(where(is.list), ~ map_dbl(.x, ~ ifelse(is.null(.), NA, .))))%>%
-  #remove rows when any of the values in the columns other than site, DT_round, Depth (not yet model parameter) are NA
-  mutate( data_avail = ifelse((!is.na(`Chl-a Fluorescence`) & 
-    !is.na(`Specific Conductivity`) & 
-    !is.na(`Temperature`) & 
-    !is.na(`Turbidity`) & 
-    !is.na(`FDOM Fluorescence`)), TRUE, FALSE))
 
-#save applicable data
+#Get most recent files
+all_data_2023_wide_file <- list.files(path = "data/upper_clp_dss/sensor/prepped/", pattern = "all_2023_sensor_data_.*\\.parquet$", full.names = TRUE)%>%tail(1)
+all_data_2024_wide_file <- list.files(path = "data/upper_clp_dss/sensor/prepped/", pattern = "all_2024_sensor_data_.*\\.parquet$", full.names = TRUE)%>%tail(1)
+all_data_2025_wide_file <- list.files(path = "data/upper_clp_dss/sensor/prepped/", pattern = "all_2025_sensor_data_.*\\.parquet$", full.names = TRUE)%>%tail(1)
+```
 
-min_date = format(min(all_sensor_data_wide$DT_round, na.rm = TRUE), "%Y-%m-%d")
-max_date = format(max(all_sensor_data_wide$DT_round, na.rm = TRUE), "%Y-%m-%d")
+### Read in recent files
 
-write_parquet(all_sensor_data_wide, paste0("data/upper_clp_dss/sensor/prepped/all_sensor_data_",min_date, "_", max_date,".parquet"))
+```{r}
+# Read in all datasets, subset to hourly medians and then pivot to wide format
+all_data <- list(read_parquet(file = all_data_2023_wide_file), 
+                 read_parquet(file = all_data_2024_wide_file), 
+                 read_parquet(file = all_data_2025_wide_file))
+
+#combine each year's data
+all_data_wide <- all_data %>%
+  map(~ .x %>%
+        rename(DT_hourly_round = DT_group) %>%
+        distinct(site, DT_hourly_round, parameter, hourly_median) %>%
+        pivot_wider(
+          id_cols = c(site, DT_hourly_round),
+          names_from = parameter,
+          values_from = hourly_median
+        )%>%
+      #cleaning up turbidity values (rounding to nearest value, setting min to 1 and max to 1000)
+      mutate(Turbidity = if_else(Turbidity <= 0, 0.1, if_else(Turbidity>=1000, 1000, Turbidity)))
+      )
 ```
 
 
+## Compute additional lagged parameters
+
+```{r}
+
+final_dataset <-all_data_wide%>%
+  map(., function(df){
+    df %>%
+      #applying FDOM temperature correcting/standardization
+      apply_fdom_temp_corr( fdom_col = "FDOM Fluorescence",
+                            temp_col = "Temperature",
+                            fdom_corr_col = "FDOM_corr_25c",
+                            Tr = 25,
+                            rho = -0.015)%>%
+      # recent means (water temp)
+      calc_lagged_parameter(site_col = "site", parameter_col = "Temperature",
+                            dt_col = "DT_hourly_round", lag_fun = "mean",
+                            time_period = "48 hour", new_value_col = "temp_mean_48hr")%>%
+      calc_lagged_parameter(site_col = "site", parameter_col = "Temperature",
+                            dt_col = "DT_hourly_round", lag_fun = "mean",
+                            time_period = "24 hour", new_value_col = "temp_mean_24hr")%>%
+      # recent maxes (temp, fdom)
+      calc_lagged_parameter(site_col = "site", parameter_col = "FDOM Fluorescence",
+                            dt_col = "DT_hourly_round", lag_fun = "max",
+                            time_period = "6 hour", new_value_col = "fdom_max_6hr")%>%
+      calc_lagged_parameter(site_col = "site", parameter_col = "FDOM_corr_25c",
+                            dt_col = "DT_hourly_round", lag_fun = "max",
+                            time_period = "6 hour", new_value_col = "fdom_corr_max_6hr")%>%
+      calc_lagged_parameter(site_col = "site", parameter_col = "Temperature",
+                            dt_col = "DT_hourly_round", lag_fun = "max",
+                            time_period = "24 hour", new_value_col = "temp_max_24hr")%>%
+      # recent variance/sd (sc)
+      calc_lagged_parameter(site_col = "site", parameter_col = "Specific Conductivity",
+                            dt_col = "DT_hourly_round", lag_fun = "var",
+                            time_period = "24 hour", new_value_col = "sc_var_24hr")%>%
+      mutate(sc_sd_24hr = sqrt(sc_var_24hr))%>%
+      #12 hour median turbidity (proxy for recent storm event)
+      calc_lagged_parameter(site_col = "site", parameter_col = "Turbidity",
+                            dt_col = "DT_hourly_round", lag_fun = "median",
+                            time_period = "24 hour", new_value_col = "turb_median_12hr")
+  })%>%
+  bind_rows()
 
 
-## FC Sensor Data
+```
 
-TODO:
-- Read in 2023-2024 historical data (chl-a not livestreaming). 
+## Get Flow data for CLP & join with sensor data
+
+```{r}
+
+min_date <- min(final_dataset$DT_hourly_round, na.rm = T)
+max_date <- max(final_dataset$DT_hourly_round, na.rm = T)
+
+canyon_mouth_flow <- get_telemetry_ts(abbrev = "CLAFTCCO", 
+                 parameter = "DISCHRG", 
+                 start_date = as.Date(min_date)- days(1),
+                 end_date = as.Date(max_date)+ days(1),
+                 timescale = "hour")%>%
+  select(DT_hourly_round = meas_date, hourly_canyon_flow_cfs = meas_value)%>%
+  mutate(DT_hourly_round = with_tz(ymd_hms(DT_hourly_round, tz = "America/Denver"), tzone = "MST"))
+
+canyon_mouth_flow_daily <- get_telemetry_ts(abbrev = "CLAFTCCO", 
+                 parameter = "DISCHRG", 
+                 start_date = as.Date(min_date)- days(1),
+                 end_date = as.Date(max_date)+ days(1),
+                 timescale = "day")%>%
+  select(date = datetime, daily_canyon_flow_cfs = meas_value)%>%
+  mutate( date = as.Date(date))
+
+final_dataset <- final_dataset%>%
+  mutate(date = as_date(DT_hourly_round))%>%
+  left_join(canyon_mouth_flow, by = "DT_hourly_round")%>%
+  left_join(canyon_mouth_flow_daily, by = "date")%>%
+  select(-date)
+  
+
+```
+
+## Save wide dataset
+
+This will be used downstream to determine matchups/modeling
+
+```{r}
+write_parquet(final_dataset, paste0("data/upper_clp_dss/sensor/prepped/all_sensor_data_wide_", Sys.Date(),".parquet"))
+
+```
+
+# Pull in & clean up grab sample data
+
+This will/should become a function in the future 
+(ie water_chem <- `load_clp_chem_dataset(zenodo_data_version, save_folder_dir, fc_data_path)`)
 
 
-- Read in 2025
+## ROSS
+
+```{r}
+
+#discrete sample data and location metadata from most recent pub
+
+source("src/pull_ROSS_zenodo_data.R")
+zenodo_data <- pull_ROSS_zenodo_data(data_version = "v2025.07.01", DOI = "15883685", save_folder_dir = "data/upper_clp_dss/ross_clp_chem")
+
+# Grab the water chemistry dataset
+
+ross_water_chem <- zenodo_data[["most_recent_chem"]]%>%
+  mutate(site_code = tolower(site_code), 
+         #fixing site names based on sonde deployments with ROSS/Virridy sondes
+         site_code = case_when(site_code == "archery" & DT_mst <= ymd("2024-11-30") ~ "archery_virridy",
+                          site_code == "timberline" & DT_mst <= ymd("2024-11-30") ~ "riverbend_virridy",
+                          site_code == "prospect" & DT_mst <= ymd("2024-11-30") ~ "cottonwood_virridy",
+                          #updating to new names
+                          site_code == "timberline" & DT_mst >= ymd("2024-11-30") ~ "riverbend",
+                          site_code == "prospect" & DT_mst >= ymd("2024-11-30") ~ "cottonwood",
+                          site_code == "lincoln" ~ "udall", 
+                          site_code == "legacy" ~ "salyer",
+                          site_code == "boxelder" ~ "elc",
+                          site_code == "tamasag" ~ "bellvue",
+                          T ~ site_code))%>%
+  filter(DT_mst >= as_date("2023-09-01"))%>%
+  distinct()%>%
+  dplyr::select(site_code, 
+         Date, 
+         DT_sample = DT_mst,
+         TOC, TN, DOC, ChlA, NO3, NH4, PO4, SC,Cl, lab_turb = Turbidity, TSS,DT_mst_char)%>%
+  mutate(collector = "ROSS")
+```
+
+## Fort Collins UCLP Data
+
+This is given to us by the City of Fort Collins Watershed Team (Diana Schmidt and Jared Heath). 
+2025 Dataset is not yet finalized but can likely still be used for our first models
+
+
+```{r}
+
+FC_chem_2022_2024 <- read_csv("data/upper_clp_dss/fc_clp_chem/UCLP_CWQMP_database_2022-24.csv", show_col_types = F)%>%
+  mutate(Date = as.POSIXct(Date, format = "%m/%d/%y"), 
+         NO3 = NO3_N/ 0.2259, 
+         SC = TDS/ 0.65, #converting TDS to SC
+         Cl = as.numeric(Cl), 
+         lab_turb = as.numeric(Turbidity),
+         TN = as.numeric(TN_calc),
+         ChlA = NA_integer_,
+         DOC = NA_integer_, 
+         NH4 = NA_integer_, 
+         TSS = NA_integer_,
+         site_code = tolower(ShortDesc))%>%
+  #filter to the period of our sensor deployment and sites where we have sensors
+  filter(site_code %in% c("chd", 'pbd', "sfm") & Date >= as_date("2023-09-01"))%>%
+  #grab columns of interest
+  dplyr::select(site_code, Date,
+         TOC, TN, DOC, ChlA, NO3, NH4, PO4 = oPhos, SC,Cl, lab_turb, TSS)%>%
+  mutate(collector = "FC")
+
+FC_field_data_2022_2024 <- readxl::read_xlsx(path = "data/upper_clp_dss/fc_clp_chem/UCLP_field_data_2022-24.xlsx")%>%
+  mutate(
+    Date = as.Date(`Date (MM/DD/YYYY)`),
+    # Combine date and time into one datetime column from MT to MST for consistency 
+    dt_mst = with_tz(ymd_hms(paste(
+      format(`Date (MM/DD/YYYY)`, "%Y-%m-%d"), 
+      format(`Time (HH:MM:SS)`, "%H:%M:%S")
+    ), tz = "America/Denver"), tzone = "MST"),
+    # Remove numbers from site name
+    site_code = tolower(gsub("\\d+", "", `Site Name`)), 
+    DT_mst_char = as.character(dt_mst)
+  )%>%
+  dplyr::select(site_code, Date, DT_sample = dt_mst, DT_mst_char)
+  
+# Combine the chemistry data with the field data
+FC_chem_2022_2024 <- FC_chem_2022_2024 %>%
+  left_join(FC_field_data_2022_2024, by = c("site_code", "Date")) 
+
+
+# Repeat for 2025 data (TOC only!)
+
+FC_chem_2025 <- readxl::read_xlsx("data/upper_clp_dss/fc_clp_chem/UCLP_CWQMP_TOC_202504-202506.xlsx")%>%
+  filter(grepl(x = `Parameter Name`, pattern = "Total Organic Carbon", ignore.case = TRUE), 
+          `Entered Unit` == "mg/L",
+         grepl(x = `Location Name`, pattern = "CHD|PBD|SFM|PBR", ignore.case = TRUE))%>%
+  dplyr::select(
+    Date = `Sampled Date`, 
+    site_name = `Location Name`,
+    value = `Corrected Result`
+  )%>%
+  mutate(site_code = case_when(
+    grepl("PBR", site_name, ignore.case = TRUE) ~ "pbr",
+    grepl("CHD", site_name, ignore.case = TRUE) ~ "chd",
+    grepl("PBD", site_name, ignore.case = TRUE) ~ "pbd",
+    grepl("SFM", site_name, ignore.case = TRUE) ~ "sfm",
+    TRUE ~ NA_character_),
+         TOC = as.numeric(value))%>%
+  mutate(collector = "FC")%>%
+  dplyr::select(site_code, Date, TOC, collector)
+
+FC_field_data_2025 <- readxl::read_xlsx(path = "data/upper_clp_dss/fc_clp_chem/UCLP_field_data_04-062025.xlsx")%>%
+  mutate(
+    Date = as.Date(`Date (MM/DD/YYYY)`),
+    # Combine date and time into one datetime column from MT to MST for consistency 
+    dt_mst = with_tz(ymd_hms(paste(
+      format(`Date (MM/DD/YYYY)`, "%Y-%m-%d"), 
+      format(`Time (HH:MM:SS)`, "%H:%M:%S")
+    ), tz = "America/Denver"), tzone = "MST"),
+    # Remove numbers from site name
+    site_code = tolower(gsub("\\d+", "", `Site Name`)), 
+    DT_mst_char = as.character(dt_mst)
+  )%>%
+  dplyr::select(site_code, Date, DT_sample = dt_mst, DT_mst_char)
+
+
+FC_chem_2025 <- FC_chem_2025 %>%
+  left_join(FC_field_data_2025, by = c("site_code", "Date"))%>%
+  na.omit()
+
+
+FC_chem <- bind_rows(FC_chem_2022_2024, FC_chem_2025)
+
+
+#write_csv(FC_chem, "data/FC_clp_chem/FC_testing_data.csv")
+```
+
+## Combine data
+```{r}
+
+water_chem <- bind_rows(ross_water_chem, FC_chem)
+
+#save for later use
+write_parquet(water_chem, "data/upper_clp_dss/modeling/ROSS_FC_water_chemistry.parquet")
+
+
+# ggplot(water_chem%>%
+#          filter(site_code %in% c("sfm", "chd", "pbr")), aes(x = Date, y = TOC, color = collector)) +
+#   geom_point() +
+#   geom_line()+
+#   facet_wrap(~site_code, scales = "free_y") +
+#   labs(title = "Water Chemistry Data from Ross and FC",
+#        x = "Date",
+#        y = "TOC (mg/L)") +
+#   theme_minimal()
+
+```
 

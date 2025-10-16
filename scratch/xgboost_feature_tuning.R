@@ -1,4 +1,4 @@
-#' @title XGboost model training with site-stratified hyperparameter tuning
+#' @title XGboost model training with site-stratified feature tuning
 #'
 #' @description
 #' This script with take in training/validation data, hyper parameters, site info on train/val splits and column info and then train/hypertune XGBoost models using caret
@@ -10,8 +10,7 @@
 #'   - A numeric vector of length `nrow(data)`: each observation is assigned the
 #'     corresponding weight, which will be subset by fold during training/validation.
 #'   - A function that takes a data.frame and returns a numeric vector of weights.
-#' @param tune_grid expanded grid of hyperparameters to tune over. Please double check with `caret` and `xgboost` packages before inputting hyperparameters.
-#' If NULL, a default grid will be used.
+#' @param feature_grid expanded grid of hyperparameters to tune over.
 #'
 #' @param target_col Character string indicating column of the target variable to be predicted.
 #'
@@ -21,14 +20,13 @@
 #'
 #' @param fold_ids dataframe containing the fold number and a list of the corresponding validation site ids
 #'
-#' @param save_fold_models logical for whether the model itself should be saved
+#' @param plot_dir Character string indicating directory to save plots. If NULL, plots will not be saved.
 #'
-#' @return A caret model object containing the trained XGBoost model for each fold and performance metrics (train/val RMSE, MAE, Bias).
-#' Best performing models determined by taking the top 10 val RMSE scores and then selecting the one with the smallest train-val gap.
-#'
+#' @return
 #'
 #' @examples
-#' folds <- tibble(
+# here, we assume that val_set_1 (and other objects in the list) contain vectors of identifiers present in the `data` dataframe
+#' folds <- data.frame(
 #'   fold = 1:4,
 #'   val_ids = list(val_set_1, val_set_2, val_set_3, val_set_4)
 #'  )
@@ -50,66 +48,43 @@
 #' units = "mg/L"
 #')
 
-xgboost_site_stratified_tuning <- function(data, target_col = "TOC", site_col = "id", weights = NULL,
-                                           tune_grid = NULL, fold_ids, units = "mg/L",
-                                           save_fold_models = TRUE) {
+xgboost_feature_tuning <- function(data, target_col = "TOC", site_col = "id", weights = NULL,
+                                   feature_grid = NULL, hyper_params, fold_ids, units = "mg/L",
+                                   plot_dir = NULL) {
 
-  # Create default grid if not provided
-  if (is.null(tune_grid)) {
-    tune_grid <- expand.grid(
-      nrounds = 10000,
-      max_depth = c(2, 3, 4),
-      eta = c(0.005, 0.01, 0.1),
-      gamma = c(0.4, 0.6),
-      colsample_bytree = c(0.5, 0.8),
-      min_child_weight = c(2, 4, 6),
-      subsample = c(0.5, 0.8)
-    )
-  }
-
-  #Set up the fold indices
-  n_folds <- nrow(fold_ids)
-
+  # Create empty lists for folds
   fold_indices <- list()
   fold_indices_out <- list()
 
-  # create indices for each fold based on the fold_ids input lists
-  for (i in 1:n_folds) {
+  # define indices for each fold based on the fold_ids input vectors
+  for (i in 1:nrow(fold_ids)) {
     val_sites <- fold_ids$val_ids[[i]]
 
     # Indices for validation
     val_idx <- which(data[[site_col]] %in% val_sites)
-    # Indices for training (complement)
+    # Indices of training set
     train_idx <- setdiff(1:nrow(data), val_idx)
-
+    #store indices in list
     fold_indices[[i]] <- train_idx
     fold_indices_out[[i]] <- val_idx
   }
 
-  # Prepare features
-  features <- setdiff(names(data), c(target_col, site_col))
-
   # Train model
   cat("Starting site-stratified hyperparameter tuning...\n")
-
+  #create empty lists to store output
   fold_models <- list()
   fold_results <- list()
   best_params <- list()
-  #Testing to see if data is being stored in correctly between groups
-  #train_data_lists <- list()
-  #val_data_lists <- list()
 
-# Run through each train/val fold and hypertune
-  for (i in seq_along(fold_indices)) {
-    cat(paste0("Tuning fold ", i, " of ", n_folds, "...\n"))
+  # Run through each train/val fold: determine best features and hypertune model parameters
+  for (i in 1:length(fold_indices)) {
+    cat(paste0("Tuning fold ", i, " of ", nrow(fold_ids), "...\n"))
 
     #setup performance dataframe
     perf <- data.frame()
+    all_importances <- data.frame()
 
     # Split data into training and validation sets based on indices above
-    train_idx <- fold_indices[[i]]
-    val_idx   <- fold_indices_out[[i]]
-
     train_data <- data[fold_indices[[i]], ]
     #train_data_lists[[i]] <- train_data
     val_data   <- data[fold_indices_out[[i]], ]
@@ -125,54 +100,58 @@ xgboost_site_stratified_tuning <- function(data, target_col = "TOC", site_col = 
       w_val   <- weights(val_data)
     } else if (length(weights) == nrow(data)) {
       #use external weighting function
-      w_train <- weights[train_idx]
-      w_val   <- weights[val_idx]
+      w_train <- weights[fold_indices[[i]]]
+      w_val   <- weights[fold_indices_out[[i]]]
     } else {
       stop("`weights` must be NULL, a function(data) -> numeric, or a vector of length nrow(data)")
     }
 
-    # set up data matrix for xgb
-    dtrain <- xgb.DMatrix(
-      data = as.matrix(train_data[, features]),
-      label = train_data[[target_col]],
-      weight = w_train # add weights
-    )
-
-    dval <- xgb.DMatrix(
-      data = as.matrix(val_data[, features]),
-      label = val_data[[target_col]],
-      weight = w_val # add weights
-    )
-
-    # Set train vs val for early stopping
-    watchlist <- list(train = dtrain, eval = dval)
 
     #run through all hyper parameters and save to fold_models with name foldi_gridj
-    for (j in 1:nrow(tune_grid)) {
+    for (j in 1:nrow(feature_grid)) {
 
-      #setup parameters for tune
+      #set instance of features to test
+      features <- feature_grid$features[[j]]
+
+      # set up data matrix for xgb
+      dtrain <- xgb.DMatrix(
+        data = as.matrix(train_data[, features]),
+        label = train_data[[target_col]],
+        weight = w_train # add weights
+      )
+
+      dval <- xgb.DMatrix(
+        data = as.matrix(val_data[, features]),
+        label = val_data[[target_col]],
+        weight = w_val # add weights
+      )
+
+      # Set train vs val for early stopping
+      watchlist <- list(train = dtrain, eval = dval)
+
+      # define "naive" model to choose features
       params <- list(
         objective        = "reg:squarederror",
         eval_metric      = "rmse",
-        eta              = tune_grid$eta[j],
-        gamma            = tune_grid$gamma[j],
-        alpha            = tune_grid$alpha[j],
-        lambda           = tune_grid$lambda[j],
-        max_depth        = tune_grid$max_depth[j],
-        subsample        = tune_grid$subsample[j],
-        colsample_bytree = tune_grid$colsample_bytree[j],
-        min_child_weight  = tune_grid$min_child_weight[j]
+        eta              = hyper_params$eta[1],
+        gamma            = hyper_params$gamma[1],
+        alpha            = hyper_params$alpha[1],
+        lambda           = hyper_params$lambda[1],
+        max_depth        = hyper_params$max_depth[1],
+        subsample        = hyper_params$subsample[1],
+        colsample_bytree = hyper_params$colsample_bytree[1],
+        min_child_weight  = hyper_params$min_child_weight[1]
       )
 
       #train model with hyper parameters
       model_ij <- xgb.train(
         params = params,
         data = dtrain,
-        nrounds = tune_grid$nrounds[j],
+        nrounds = hyper_params$nrounds[1],
         watchlist = watchlist,
         #change early stopping rounds based on eta (smaller eta, larger rounds)
-        early_stopping_rounds = ifelse(tune_grid$eta[j] >= 0.1, 250,
-                                       ifelse(tune_grid$eta[j] >= 0.01, 500,
+        early_stopping_rounds = ifelse(hyper_params$eta[1] >= 0.1, 250,
+                                       ifelse(hyper_params$eta[1] >= 0.01, 500,
                                               1000)),
         print_every_n = 1000,
         verbose = 0
@@ -197,6 +176,21 @@ xgboost_site_stratified_tuning <- function(data, target_col = "TOC", site_col = 
       mae_train   <- mae( train_data[[target_col]], train_data[[pred_col]])
       bias_train  <- bias(train_data[[target_col]], train_data[[pred_col]])
 
+      # store in a master tibble
+      all_importances <- bind_rows(all_importances,
+                                   xgb.importance(feature_names = features, model = model_ij) %>%
+                                     mutate(fold = i, grid_id = j))
+      # Playing with shapley values
+      #       library(SHAPforxgboost)
+      #       shap_values <- shap.values(xgb_model = model_ij, X_train = dtrain)
+      #
+      #       # shap_values$shap_score is a matrix of Shapley values
+      #       head(shap_values$shap_score)
+      #
+      #       # Summary plot
+      #       shap_long <- shap.prep(shap_contrib = shap_values$shap_score, X_train = as.matrix(train_data[, features]))
+      #       shap.plot.summary(shap_long)
+
       perf <- rbind(perf, data.frame(
         fold       = i,
         grid_id    = j,
@@ -211,16 +205,56 @@ xgboost_site_stratified_tuning <- function(data, target_col = "TOC", site_col = 
       ))
       # Save model temporarily
       fold_models[[paste0("fold", i, "_grid", j)]] <- model_ij
+
+      if(j/100 == round(j/100)){
+        cat(paste0("  Completed ", j, " of ", nrow(feature_grid), " feature sets...\n"))
+      }
+
     }
+
+    gain_p <- ggplot(all_importances, aes(x = reorder(Feature, Gain, FUN = median), y = Gain)) +
+      geom_violin(fill = "steelblue", alpha = 0.6) +
+      stat_summary(fun = median, geom = "point", size = 2, color = "red") +
+      coord_flip() +
+      labs(
+        x = "Feature",
+        y = "Gain"
+      ) +
+      ROSS_theme
+
+    freq_p <-ggplot(all_importances, aes(x = reorder(Feature, Gain, FUN = median), y = Frequency)) +
+      geom_violin(fill = "steelblue", alpha = 0.6) +
+      stat_summary(fun = median, geom = "point", size = 2, color = "red") +
+      coord_flip() +
+      labs(
+        x = "",
+        y = "Frequency"
+      ) +
+      ROSS_theme
+
+    cover_p <- ggplot(all_importances, aes(x = reorder(Feature, Gain, FUN = median), y = Cover)) +
+      geom_violin(fill = "steelblue", alpha = 0.6) +
+      stat_summary(fun = median, geom = "point", size = 2, color = "red") +
+      coord_flip() +
+      labs(
+        x = "Feature",
+        y = "Cover"
+      ) +
+      ROSS_theme
+
+    imp_plot <- ggarrange(gain_p, freq_p, cover_p, ncol = 3, nrow = 1, common.legend = TRUE, legend = "bottom")
+
+    plot(imp_plot)
 
     p <- ggplot(perf) +
       geom_histogram(aes(x = rmse_val, fill = "Val")) +
       geom_histogram(aes(x = rmse_train, fill = "Train")) +
       labs(title = paste("Fold", i, "Val & Train RMSE by Grid ID"),
            x = "RMSE", y = "density", fill = "Group") +
-      theme_minimal()
+      ROSS_theme
 
     plot(p)
+
 
     # --- Pick top 10 by validation RMSE ---
     top10 <- perf[order(perf$rmse_val), ][1:10, ]
@@ -244,12 +278,11 @@ xgboost_site_stratified_tuning <- function(data, target_col = "TOC", site_col = 
 
       #Objects for learning rate plot
       eval_log <- fold_models[[model_key]][["evaluation_log"]]
-      params <- fold_models[[model_key]][["params"]]
-      #remove objective, eval metric, validate parameters
-      params <- params[!names(params) %in% c("objective", "eval_metric", "validate_parameters")]
-      # collapse params into a single string
-      param_text <- paste(
-        names(params), "=", unlist(params),
+      #get input features for the model
+      features <- fold_models[[model_key]][["feature_names"]]
+      # collapse features into a single string
+      feature_text <- paste(
+        names(features), "", unlist(features),
         collapse = "\n"
       )
       # Get best iteration and corresponding RMSE
@@ -286,7 +319,7 @@ xgboost_site_stratified_tuning <- function(data, target_col = "TOC", site_col = 
           "text",
           x = max(eval_log$iter) * .5,   # position on x-axis
           y = max(c(eval_log$train_rmse, eval_log$eval_rmse)) * 0.9,  # position on y-axis
-          label = param_text,
+          label = paste0("Features:\n", feature_text),
           hjust = 0,
           vjust = 1,
           size = 4,
@@ -326,7 +359,7 @@ xgboost_site_stratified_tuning <- function(data, target_col = "TOC", site_col = 
       text_y3 <- box_ymax - box_height * 0.85
 
       train_val_plot <- ggplot(plot_data, aes(x = .data[[target_col]], y = .data[[target_pred_col]], color = group))+ #shape = collector)) +
-        geom_abline(intercept = 0, slope = 1, linetype = "dashed", size = 1.2) +
+        geom_abline(intercept = 0, slope = 1, linetype = "dashed", linewidth = 1.2) +
 
         # Training points (all same shape)
         geom_point(
@@ -363,7 +396,7 @@ xgboost_site_stratified_tuning <- function(data, target_col = "TOC", site_col = 
         xlim(min_val, max_val) +
         ylim(min_val, max_val)
 
-#give one plot the legend
+      #give one plot the legend
       if(k == 5){
         train_val_plots[[k]] <- train_val_plot +
           theme(legend.position = "bottom",
@@ -395,6 +428,17 @@ xgboost_site_stratified_tuning <- function(data, target_col = "TOC", site_col = 
 
     print(train_val_grid)
 
+    if(!is.null(plot_dir)){
+      #Save performance plot
+      ggsave(p, filename = file.path(plot_dir, paste0("fold", i, "_val_train_rmse_hist_", Sys.Date(), ".png")), width = 8, height = 6)
+      #Save importance plot
+      ggsave(imp_plot, filename = file.path(plot_dir, paste0("fold", i, "_feature_importance_", Sys.Date(), ".png")), width = 12, height = 8)
+      #Save eval grid
+      ggsave(eval_grid, filename = file.path(plot_dir, paste0("fold", i, "_top6_eval_plots_", Sys.Date(), ".png")), width = 16, height = 10)
+      #Save train val grid
+      ggsave(train_val_grid, filename = file.path(plot_dir, paste0("fold", i, "_top6_train_val_plots_", Sys.Date(), ".png")), width = 16, height = 10)
+    }
+
     #Ask user for best grid
     best_choice <- as.integer(readline(prompt = "Enter the grid ID of the best model from the top 5 (or type 0 to select the one with smallest train-val gap): "))
 
@@ -407,10 +451,8 @@ xgboost_site_stratified_tuning <- function(data, target_col = "TOC", site_col = 
     }
 
     model_key <- paste0("fold", i, "_grid", best_row$grid_id)
-    best_params <- fold_models[[model_key]][["params"]]%>%
-      as_tibble%>%
-      select(-c(objective, eval_metric, validate_parameters))
-    best_params[[i]] <- best_params
+    sel_params <- fold_models[[model_key]][["feature_names"]]
+    best_params[[i]] <- sel_params
 
 
     # Save only the best model for this fold
