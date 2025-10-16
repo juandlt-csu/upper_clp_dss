@@ -1,6 +1,8 @@
 #this file contains all the packages,metadata, groupings and color palettes that are used in downstream scripts
 
 knitr::opts_chunk$set(echo = TRUE)
+
+#Installing and loading all packages
 package_loader <- function(x) {
   if (x %in% installed.packages()) {
     suppressMessages({
@@ -15,7 +17,6 @@ package_loader <- function(x) {
 }
 
 
-
 invisible(
   lapply(c(
     # Date/time handling
@@ -24,7 +25,6 @@ invisible(
     # Data cleaning and utilities
     "janitor",
     "broom",
-    "here",
     # Stats/modeling
     "stats",
     "RcppRoll",
@@ -59,7 +59,6 @@ invisible(
     "jsonlite",
     "dataRetrieval",
     "RSelenium",
-    "cdssr",
     "yaml",
     # Development tools
     "devtools",
@@ -69,16 +68,36 @@ invisible(
     "data.table",
     "arrow",
     "readxl",
-    "furrr",
-    "fcw.qaqc"
+    "furrr"
   ),
   package_loader)
 )
 
+#library non CRAN packages
+non_cran_packages <- c("rossyndicate/fcw.qaqc",
+                       "anguswg-ucsb/cdssr")
+invisible(
+  lapply(non_cran_packages, function(x) {
+    if (x %in% installed.packages()) {
+      suppressMessages({
+        #remove username if already installed
+        x <- unlist(strsplit(x, "/"))[2]
+        library(x, character.only = TRUE)
+      })
+    } else {
+      suppressMessages({
+        devtools::install_github(x)
+        library(x, character.only = TRUE)
+      })
+    }
+  })
+)
+rm(non_cran_packages, package_loader) #clean up
+
+
 # Helper function
 `%nin%` <- Negate(`%in%`)
-#Simple function to negate %in%
-`%nin%` = Negate(`%in%`)
+
 
 ### ----- Meta Data ----- ###
 
