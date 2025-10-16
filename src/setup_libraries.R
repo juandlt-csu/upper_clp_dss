@@ -62,6 +62,7 @@ invisible(
     # Development tools
     "devtools",
     "here",
+    "tools",
     # Core data manipulation
     "tidyverse",
     "data.table",
