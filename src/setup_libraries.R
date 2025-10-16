@@ -77,16 +77,16 @@ non_cran_packages <- c("rossyndicate/fcw.qaqc",
                        "anguswg-ucsb/cdssr")
 invisible(
   lapply(non_cran_packages, function(x) {
-    if (x %in% installed.packages()) {
+    pack_name <- unlist(strsplit(x, "/"))[2] #get package name (no GH username)
+
+    if (pack_name %in% installed.packages()) {
       suppressMessages({
-        #remove username if already installed
-        x <- unlist(strsplit(x, "/"))[2]
-        library(x, character.only = TRUE)
+        library(pack_name, character.only = TRUE)
       })
     } else {
       suppressMessages({
         devtools::install_github(x)
-        library(x, character.only = TRUE)
+        library(pack_name, character.only = TRUE)
       })
     }
   })
