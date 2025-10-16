@@ -50,7 +50,6 @@ invisible(
     "ggbeeswarm",
     "plotly",
     "ggpmisc",
-    "flextable",
     # Web scraping/data retrieval
     "rvest",
     "httr",
