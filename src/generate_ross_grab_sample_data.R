@@ -59,7 +59,7 @@
 #' @details
 #' **Site Code Logic:**
 #' - Samples collected before 2024-11-30 at archery, timberline, and prospect sites
-#'   receive "_virridy" suffix to indicate Virridy sensor deployment period
+#'   receive "_virridy" suffix to indicate Virridy sensor was colocated at this site and data should be compared to the virridy sonde
 #' - Samples from these sites after 2024-11-30 use updated site names
 #'   (timberline → riverbend, prospect → cottonwood)
 #'
